@@ -25,6 +25,7 @@
         <button id="menu-btn" type="button" aria-label="展开或收起 agent 列表">&#9776;</button>
         <div id="header-content"></div>
         <button id="prompts-btn" type="button" hidden aria-expanded="false" aria-controls="prompts-panel">问题<span id="prompts-count"></span></button>
+        <button id="timeline-btn" type="button" hidden aria-expanded="false" aria-controls="timeline-panel">时间线<span id="timeline-count"></span></button>
       </header>
       <div id="view"></div>
     </main>
@@ -36,6 +37,14 @@
       <button id="prompts-close" type="button" aria-label="关闭问题目录">&times;</button>
     </div>
     <div id="prompts-list"></div>
+  </aside>
+  <div id="timeline-backdrop"></div>
+  <aside id="timeline-panel" aria-label="进度时间线">
+    <div class="prompts-head">
+      <strong id="timeline-title">进度时间线</strong>
+      <button id="timeline-close" type="button" aria-label="关闭进度时间线">&times;</button>
+    </div>
+    <div id="timeline-list"></div>
   </aside>
   <script type="module" src="/static/app.js"></script>
 </body>

@@ -26,13 +26,38 @@ def prompt_preview(text: str, limit: int = PREVIEW_MAX) -> str:
     return _collapse(text)[:limit]
 
 
-def list_prompts(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return {idx, timestamp, text} for every human user message, by idx."""
+def _first_text(m: dict[str, Any]) -> str:
+    return next((b["text"] for b in m["blocks"] if b["type"] == "text"), "")
+
+
+def list_prompts(messages: list[dict[str, Any]],
+                 all_messages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Return {idx, timestamp, text[, branch]} for every human user message, by idx.
+
+    A message with `branch` gets a `branch` object whose siblings carry their own preview
+    `text` and `current` (True for the one on the displayed path). Sibling messages are
+    looked up by global idx in `all_messages` (default: `messages`).
+    """
+    pool = messages if all_messages is None else all_messages
+    by_idx = {m["idx"]: m for m in pool} if all_messages is None else None
     out: list[dict[str, Any]] = []
     for m in messages:
         if m.get("role") != "user" or m.get("origin") != "human":
             continue
-        first = next((b["text"] for b in m["blocks"] if b["type"] == "text"), "")
-        out.append({"idx": m["idx"], "timestamp": m["timestamp"],
-                    "text": prompt_preview(first)})
+        item: dict[str, Any] = {"idx": m["idx"], "timestamp": m["timestamp"],
+                                "text": prompt_preview(_first_text(m))}
+        branch = m.get("branch")
+        if branch:
+            siblings = []
+            for s in branch["siblings"]:
+                if by_idx is not None:
+                    sm = by_idx.get(s["idx"])
+                else:
+                    # idx is the position in the full transcript
+                    sm = pool[s["idx"]] if 0 <= s["idx"] < len(pool) else None
+                text = prompt_preview(_first_text(sm)) if sm else ""
+                siblings.append({**s, "text": text, "current": s["idx"] == m["idx"]})
+            item["branch"] = {"index": branch["index"], "count": branch["count"],
+                              "siblings": siblings}
+        out.append(item)
     return out

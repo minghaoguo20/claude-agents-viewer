@@ -196,6 +196,62 @@ class PageTest(unittest.TestCase):
         self.assertIn("input", msgs[0]["blocks"][2])
 
 
+class CacheLruTest(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.paths = []
+        for name in "abc":
+            path = Path(tmp.name) / f"{name}.jsonl"
+            path.write_text("\n".join(fx.main_transcript_lines()) + "\n")
+            self.paths.append(path)
+        self.size = self.paths[0].stat().st_size
+
+    def keys(self, cache: TranscriptCache) -> list[str]:
+        return [p.stem for p in cache._items]
+
+    def test_evicts_least_recently_used(self) -> None:
+        a, b, c = self.paths
+        cache = TranscriptCache(self.size * 2 + 1)
+        cache.get(a), cache.get(b)
+        cache.get(a)  # touch: b is now the oldest
+        cache.get(c)
+        self.assertEqual(self.keys(cache), ["a", "c"])
+
+    def test_get_updates_order(self) -> None:
+        a, b, _ = self.paths
+        cache = TranscriptCache(self.size * 10)
+        cache.get(a), cache.get(b), cache.get(a)
+        self.assertEqual(self.keys(cache), ["b", "a"])
+
+    def test_mru_survives_tiny_budget(self) -> None:
+        a, b, _ = self.paths
+        cache = TranscriptCache(1)
+        cache.get(a), cache.get(b)
+        self.assertEqual(self.keys(cache), ["b"])
+
+    def test_evicted_reparses_identically(self) -> None:
+        a, b, _ = self.paths
+        cache = TranscriptCache(1)
+        first = cache.get(a)
+        before = first.messages
+        cache.get(b)
+        self.assertNotIn(a, cache._items)
+        self.assertEqual(first.messages, before)  # old reference stays valid
+        again = cache.get(a)
+        self.assertIsNot(again, first)
+        self.assertEqual(again.messages, before)
+
+    def test_scan_does_not_pollute_cache(self) -> None:
+        a, b, c = self.paths
+        cache = TranscriptCache(self.size * 10)
+        hot = cache.get(a)
+        self.assertEqual(len(cache.get(b, keep=False).messages), 7)
+        cache.get(c, keep=False)
+        self.assertEqual(self.keys(cache), ["a"])
+        self.assertIs(cache.get(a, keep=False), hot)
+
+
 class SubagentTest(unittest.TestCase):
     def test_list_subagents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -49,14 +49,17 @@ def search_agents(agents: list[AgentInfo], cache: TranscriptCache, query: str,
     for agent in agents:
         if agent.transcript is None:
             continue
-        for msg in reversed(cache.get(agent.transcript).messages):
+        tr = cache.get(agent.transcript, keep=False)
+        for msg in reversed(tr.messages):
             hit = search_message(msg, needle)
             if hit is None:
                 continue
             if len(results) >= limit:
                 return {"results": results, "truncated": True}
+            leaf, on_default = tr.locate(msg["uuid"])
             results.append({"session_id": agent.session_id, "name": agent.name,
                             "idx": msg["idx"], "role": msg["role"],
                             "timestamp": msg["timestamp"], "block_type": hit[0],
-                            "snippet": hit[1]})
+                            "snippet": hit[1], "leaf": leaf,
+                            "on_default_path": on_default})
     return {"results": results, "truncated": False}

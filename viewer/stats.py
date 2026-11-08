@@ -24,7 +24,7 @@ def agent_stats(agent: AgentInfo, cache: TranscriptCache) -> dict[str, Any]:
     cost: dict[str, Any] = EMPTY_COST
     count = 0
     if agent.transcript is not None:
-        tr = cache.get(agent.transcript)
+        tr = cache.get(agent.transcript, keep=False)
         count = len(tr.messages)
         cost = tr.cost_state or EMPTY_COST
     return {"session_id": agent.session_id, "name": agent.name, "status": agent.status,

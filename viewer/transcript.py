@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .branches import BranchIndex, Node
 from .files import read_json
 
 PERSISTED_RE = re.compile(r"tool-results/([\w.-]+)")
@@ -113,8 +114,15 @@ class Transcript:
         self.cost_state: dict[str, Any] | None = None
         self._messages: list[dict[str, Any]] = []
         self._msg_ids: list[str | None] = []  # message.id per normalized message
+        self._nodes: dict[str, Node] = {}  # every record with a uuid, file order
+        self._index: BranchIndex | None = None  # derived cache, dropped on ingest
         self._offset = 0
         self._lock = threading.Lock()
+
+    @property
+    def parsed_bytes(self) -> int:
+        """File bytes consumed so far; the cheap basis of the memory estimate."""
+        return self._offset
 
     @property
     def messages(self) -> list[dict[str, Any]]:
@@ -130,6 +138,7 @@ class Transcript:
     def _reset(self) -> None:
         self.title = self.cost_usd = self.cost_state = None
         self._messages, self._msg_ids, self._offset = [], [], 0
+        self._nodes, self._index = {}, None
 
     def _read_new_lines(self) -> list[bytes]:
         try:
@@ -155,7 +164,7 @@ class Transcript:
             return
         kind = rec.get("type")
         if kind in ("user", "assistant"):
-            self._add_message(rec)
+            self._add_node(rec, self._add_message(rec))
         elif kind in ("ai-title", "custom-title"):
             title = rec.get("aiTitle" if kind == "ai-title" else "customTitle")
             if isinstance(title, str) and title:
@@ -165,20 +174,37 @@ class Transcript:
             if isinstance(cost, (int, float)):
                 self.cost_usd = float(cost)
             self.cost_state = normalize_cost_state(rec)
+        if kind not in ("user", "assistant"):
+            self._add_node(rec, None)
 
-    def _add_message(self, rec: dict[str, Any]) -> None:
+    def _add_node(self, rec: dict[str, Any], idx: int | None) -> None:
+        """Register a record in the parent/child tree (idx = its message, if any)."""
+        uuid = rec.get("uuid")
+        if not isinstance(uuid, str) or not uuid or uuid in self._nodes:
+            return
+        parent = rec.get("parentUuid")
+        if not isinstance(parent, str) or not parent:
+            parent = rec.get("logicalParentUuid")  # compaction keeps the chain here
+            if parent not in self._nodes:
+                parent = None
+        human = idx is not None and self._messages[idx]["origin"] == "human"
+        self._nodes[uuid] = Node(parent, idx, human)
+        self._index = None
+
+    def _add_message(self, rec: dict[str, Any]) -> int | None:
+        """Append (or merge) a message; return its global idx, None if dropped."""
         msg = rec.get("message")
         if not isinstance(msg, dict):
-            return
+            return None
         blocks = normalize_blocks(msg.get("content"))
         if not blocks:
-            return
+            return None
         role = rec["type"]
         mid = msg.get("id") if role == "assistant" else None
         if mid and self._msg_ids and self._msg_ids[-1] == mid:
             last = self._messages[-1]
             self._messages[-1] = {**last, "blocks": last["blocks"] + blocks}
-            return
+            return last["idx"]
         self._messages.append({
             "idx": len(self._messages), "uuid": rec.get("uuid"), "role": role,
             "timestamp": rec.get("timestamp"), "model": msg.get("model"),
@@ -186,22 +212,91 @@ class Transcript:
             "blocks": blocks,
         })
         self._msg_ids.append(mid)
+        return len(self._messages) - 1
+
+    def _branch_index(self) -> BranchIndex:
+        if self._index is None:
+            self._index = BranchIndex(self._nodes)
+        return self._index
+
+    def view(self, leaf: str | None = None) -> tuple[str | None, list[dict[str, Any]]]:
+        """Messages on the path to `leaf` (default leaf if None) with `branch` info.
+
+        Returns (leaf uuid used, messages). Raises KeyError for an unknown leaf.
+        A transcript without any parent links is returned whole, in file order.
+        """
+        with self._lock:
+            index = self._branch_index()
+            if leaf is not None and leaf not in self._nodes:
+                raise KeyError(leaf)
+            used = leaf or index.default_leaf
+            if not index.tree:
+                return used, list(self._messages)
+            out = []
+            for idx in index.path(used):
+                m = self._messages[idx]
+                siblings = index.siblings_for(m["uuid"])
+                if siblings:
+                    pos = next(i for i, s in enumerate(siblings) if s["uuid"] == m["uuid"])
+                    m = {**m, "branch": {"index": pos + 1, "count": len(siblings),
+                                         "siblings": siblings}}
+                out.append(m)
+            return used, out
+
+    def locate(self, uuid: str | None) -> tuple[str | None, bool]:
+        """(latest leaf under uuid, whether the message is on the default path)."""
+        with self._lock:
+            index = self._branch_index()
+            node = self._nodes.get(uuid) if uuid else None
+            if not index.tree:
+                return index.latest_leaf_under(uuid), True
+            on_default = node is not None and node.msg in index.default_idxs()
+            return index.latest_leaf_under(uuid), on_default
 
 
 class TranscriptCache:
-    """Thread-safe cache of Transcript instances keyed by path."""
+    """Thread-safe LRU cache of Transcript instances keyed by path.
 
-    def __init__(self) -> None:
-        self._items: dict[Path, Transcript] = {}
+    Memory is bounded by an estimate: parsed bytes of each transcript times
+    PARSED_COST_FACTOR (measured retained memory is 0.2-0.4x the file size,
+    so 1x is conservative). The most recently used entry is never evicted.
+    Eviction only drops the cache reference; a request still holding the
+    Transcript keeps a valid object, and the next access re-parses.
+    """
+
+    PARSED_COST_FACTOR = 1
+
+    def __init__(self, max_bytes: int = 512 * 1024 * 1024) -> None:
+        self._max_bytes = max_bytes
+        self._items: dict[Path, Transcript] = {}  # insertion order = LRU order
         self._lock = threading.Lock()
 
-    def get(self, path: Path) -> Transcript:
+    def get(self, path: Path, *, keep: bool = True) -> Transcript:
+        """Return the refreshed transcript, marking it most recently used.
+
+        keep=False is for bulk scans (search, stats): an uncached transcript
+        is parsed but not stored, so a scan cannot evict the hot entries.
+        """
         with self._lock:
-            tr = self._items.get(path)
-            if tr is None:
+            tr = self._items.pop(path, None)
+            if tr is not None:
+                self._items[path] = tr  # touch: move to the MRU end
+            elif keep:
                 tr = self._items[path] = Transcript(path)
+            else:
+                tr = Transcript(path)
         tr.refresh()
+        if keep:
+            self._evict()
         return tr
+
+    def _evict(self) -> None:
+        with self._lock:
+            total = sum(t.parsed_bytes for t in self._items.values()) * self.PARSED_COST_FACTOR
+            for key in list(self._items)[:-1]:  # never the MRU entry
+                if total <= self._max_bytes:
+                    break
+                total -= self._items.pop(key).parsed_bytes * self.PARSED_COST_FACTOR
 
 
 def truncate_text(text: str, limit: int) -> tuple[str, bool]:
@@ -226,11 +321,12 @@ def truncate_block(block: dict[str, Any], limit: int) -> dict[str, Any]:
 
 def select_window(messages: list[dict[str, Any]], before: int | None,
                   after: int | None, around: int | None, limit: int) -> list[dict[str, Any]]:
-    """Pick the message window; idx equals the list position."""
+    """Pick the message window by idx (idx may have gaps on a branch path)."""
     if limit <= 0:
         return []
     if around is not None:
-        start = max(0, around - limit // 2)
+        pos = next((i for i, m in enumerate(messages) if m["idx"] >= around), len(messages))
+        start = max(0, pos - limit // 2)
         return messages[start:start + limit]
     if after is not None:
         return [m for m in messages if m["idx"] > after][:limit]
@@ -245,8 +341,8 @@ def page(messages: list[dict[str, Any]], *, before: int | None = None,
     if sum(v is not None for v in (before, after, around)) > 1:
         raise ValueError("before, after and around are mutually exclusive")
     window = select_window(messages, before, after, around, limit)
-    has_before = bool(window) and window[0]["idx"] > 0
-    has_after = bool(window) and window[-1]["idx"] < len(messages) - 1
+    has_before = bool(window) and window[0]["idx"] > messages[0]["idx"]
+    has_after = bool(window) and window[-1]["idx"] < messages[-1]["idx"]
     out = [{**m, "blocks": [truncate_block(b, max_block_chars) for b in m["blocks"]]}
            for m in window]
     return {"messages": out, "total": len(messages), "has_more_before": has_before,

@@ -9,6 +9,7 @@
 - agent 列表与 `claude agents` 一致，按工作目录分组，显示实时状态
 - 聊天式对话视图：Markdown（含表格）、工具调用与结果配对、Edit diff、子 agent 对话
 - 向上滚动懒加载更早消息，运行中的 agent 实时刷新
+- 回溯分支：用 ‹ 2/3 › 控件在同一问题的不同分支间切换
 - 问题导航，用 `[` / `]` 在你的提问之间跳转
 - 任务进度时间线（working、done 等状态变化与结果摘要）
 - 跨所有 agent 的全文搜索，点击结果定位到对应消息
@@ -73,6 +74,7 @@ cp config.ini.example config.ini
 | `[viewer] page_size` | 每页消息数 | `50` |
 | `[viewer] max_block_chars` | 单个内容块最多返回的字符数，超出部分点击展开 | `4000` |
 | `[viewer] poll_interval_ms` | 前端轮询间隔（毫秒） | `3000` |
+| `[viewer] cache_max_mb` | 已解析会话的内存预算（MB），超出按 LRU 淘汰 | `512` |
 
 <details>
 <summary>数据来源</summary>

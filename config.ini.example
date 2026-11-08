@@ -16,3 +16,6 @@ page_size = 50
 max_block_chars = 4000
 # Refresh interval for live agents
 poll_interval_ms = 3000
+# Memory budget (MB) for parsed transcripts; least recently used are evicted
+# and re-parsed on demand. Estimated as file size (real usage is ~0.2-0.4x).
+cache_max_mb = 512

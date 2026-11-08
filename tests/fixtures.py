@@ -148,3 +148,51 @@ def make_claude_home(root: Path) -> Path:
                 "model": "claude-x", "finished": True})
     (proj / "secret.txt").write_text("outside", encoding="utf-8")
     return home
+
+
+def tmsg(kind: str, uuid: str, parent: str | None, content: Any, **extra: Any) -> str:
+    """Tree-aware message record (carries parentUuid)."""
+    return msg(kind, uuid, content, parentUuid=parent, **extra)
+
+
+def text_block(text: str) -> list[dict[str, Any]]:
+    return [{"type": "text", "text": text}]
+
+
+def branch_lines() -> list[str]:
+    """Rewind tree: h1 -> a1 -> (h2 | h2b | h2c) -> answers; an attachment sits in the chain."""
+    return [
+        tmsg("user", "h1", None, "first question"),
+        rec("attachment", uuid="att1", parentUuid="h1"),
+        tmsg("assistant", "a1", "att1", text_block("first answer"), message={"id": "m1"}),
+        tmsg("user", "h2", "a1", "old question one"),
+        tmsg("assistant", "a2", "h2", text_block("old answer one"), message={"id": "m2"}),
+        tmsg("user", "h2b", "a1", "old question two"),
+        tmsg("assistant", "a2b", "h2b", text_block("old answer two"), message={"id": "m3"}),
+        tmsg("user", "h2c", "a1", "newest question"),
+        tmsg("assistant", "a2c", "h2c", text_block("newest answer"), message={"id": "m4"}),
+    ]
+
+
+def fanout_lines() -> list[str]:
+    """Parallel tool calls: two tool_use pieces (one message.id) and two results; no rewind."""
+    use = lambda i: [{"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {}}]
+    res = lambda i: [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "ok"}]
+    return [
+        tmsg("user", "f1", None, "run two things"),
+        tmsg("assistant", "f2", "f1", use(1), message={"id": "mf"}),
+        tmsg("assistant", "f3", "f2", use(2), message={"id": "mf"}),
+        tmsg("user", "f4", "f3", res(1)),  # parent is the LAST piece of the merged message
+        tmsg("user", "f5", "f4", res(2)),
+        tmsg("assistant", "f6", "f5", text_block("both done"), message={"id": "mg"}),
+    ]
+
+
+def compaction_lines() -> list[str]:
+    return [
+        tmsg("user", "c1", None, "before compaction"),
+        tmsg("assistant", "c2", "c1", text_block("reply"), message={"id": "mc"}),
+        rec("system", uuid="c3", parentUuid=None, logicalParentUuid="c2"),
+        tmsg("user", "c4", None, "summary", isCompactSummary=True, logicalParentUuid="c3"),
+        tmsg("assistant", "c5", "c4", text_block("after"), message={"id": "md"}),
+    ]

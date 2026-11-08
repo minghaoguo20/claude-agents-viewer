@@ -18,6 +18,7 @@ class Config:
     page_size: int
     max_block_chars: int
     poll_interval_ms: int
+    cache_max_mb: int = 512
 
 
 def default_config_path() -> Path:
@@ -38,6 +39,9 @@ def load_config(path: Path | None = None) -> Config:
     host = parser.get("server", "host", fallback="127.0.0.1").strip()
     if host not in LOOPBACK_HOSTS:
         raise ValueError(f"refusing non-loopback host: {host!r}")
+    cache_max_mb = parser.getint("viewer", "cache_max_mb", fallback=512)
+    if cache_max_mb <= 0:
+        raise ValueError(f"cache_max_mb must be a positive integer: {cache_max_mb}")
     return Config(
         host=host,
         port=parser.getint("server", "port", fallback=8765),
@@ -45,4 +49,5 @@ def load_config(path: Path | None = None) -> Config:
         page_size=parser.getint("viewer", "page_size", fallback=50),
         max_block_chars=parser.getint("viewer", "max_block_chars", fallback=4000),
         poll_interval_ms=parser.getint("viewer", "poll_interval_ms", fallback=3000),
+        cache_max_mb=cache_max_mb,
     )

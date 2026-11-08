@@ -9,6 +9,7 @@ A local web page for browsing the session transcripts of Claude Code background 
 - Agent list matching `claude agents`, grouped by working directory, with live status
 - Chat-style transcript: Markdown (including tables), tool calls paired with their results, Edit diffs, subagent conversations
 - Lazy loading of older messages and live updates for running agents
+- Rewind branches: switch between alternatives with a ‹ 2/3 › control
 - Question navigator, with `[` / `]` to jump between your questions
 - Job progress timeline (working, done, ... plus the result summary)
 - Full-text search across all agents, with jump-to-message
@@ -73,6 +74,7 @@ Lookup order: `--config` / `CAV_CONFIG` → `config.ini` → `config.ini.example
 | `[viewer] page_size` | Messages per page | `50` |
 | `[viewer] max_block_chars` | Max characters per content block before "expand" | `4000` |
 | `[viewer] poll_interval_ms` | Frontend polling interval in ms | `3000` |
+| `[viewer] cache_max_mb` | Memory budget in MB for parsed transcripts (LRU eviction) | `512` |
 
 <details>
 <summary>Data sources</summary>

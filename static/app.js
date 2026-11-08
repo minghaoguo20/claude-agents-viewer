@@ -3,6 +3,7 @@
 // or through renderMarkdown(), whose output is the only trusted HTML string.
 
 import { renderMarkdown } from './markdown.js';
+import { agentHash, parseAgentParams, siblingTarget, siblingJump, branchLabel, hitLeaf } from './branch.js';
 
 // ===== Utils =====
 
@@ -31,6 +32,7 @@ const ICON_PATHS = {
   down: 'M6 9l6 6 6-6',
   bottom: 'M6 5l6 6 6-6M6 13l6 6 6-6',
   copy: 'M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1zM5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1',
+  clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 2',
   list: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',
 };
 
@@ -185,29 +187,26 @@ function splitHash(hash) {
   return { path: raw.slice(0, cut), params: new URLSearchParams(raw.slice(cut + 1)) };
 }
 
-/** Routes: {page:'agent', sid, aid, at}, {page:'search', q}, {page:'stats'} or null. */
+/** Routes: {page:'agent', sid, aid, at, b}, {page:'search', q}, {page:'stats'} or null. `b` = pinned branch leaf. */
 function parseHash() {
   const { path, params } = splitHash(location.hash);
   if (path === '/stats') return { page: 'stats' };
   if (path === '/search') return { page: 'search', q: params.get('q') || '' };
   const match = path.match(/^\/agent\/([^/]+)(?:\/sub\/([^/]+))?\/?$/);
   if (!match) return null;
-  const at = params.get('at');
   return {
     page: 'agent',
     sid: decodeURIComponent(match[1]),
     aid: match[2] ? decodeURIComponent(match[2]) : null,
-    at: match[2] || !/^\d+$/.test(at || '') ? null : Number(at), // jump target (main transcript only)
+    ...parseAgentParams(params, Boolean(match[2])), // jump target `at` and pinned leaf `b` (main transcript only)
   };
 }
-
-const agentHash = (sid, at) => `#/agent/${encodeURIComponent(sid)}${at == null ? '' : `?at=${at}`}`;
 
 function onRoute() {
   closeView();
   document.body.classList.remove('sidebar-open');
   const route = parseHash();
-  if (route?.page !== 'agent' || route.aid) setPromptsOpen(false);
+  if (route?.page !== 'agent' || route.aid) closeDrawers();
   if (route?.page === 'agent') openView(route);
   else if (route?.page === 'search') openSearch(route);
   else if (route?.page === 'stats') openStats();
@@ -495,6 +494,9 @@ function renderInputFields(block) {
 
 // ===== Renderers =====
 
+/** Branch button to refocus after a switch reloads the view (keyboard users keep their place). */
+let pendingFocus = null;
+
 /** "Load full content" control for a truncated block; calls onFull(block) and removes itself on success. */
 function truncationNote(view, ctx, onFull) {
   const message = h('span', { text: '内容已截断。' });
@@ -659,13 +661,38 @@ function renderSystemRow(msg, visible) {
       h('div', { class: 'msg-body sys-body' }, visible)));
 }
 
-function renderBubble(msg, visible) {
+function renderBubble(view, msg, visible) {
   const assistant = msg.role === 'assistant';
   const bare = msg.blocks.every((b) => ['tool_use', 'thinking', 'tool_result'].includes(b.type));
   const footer = [formatTime(msg.timestamp), assistant ? msg.model : null].filter(Boolean).join(' · ');
+  const switcher = !assistant && msg.branch ? renderBranchSwitcher(view, msg) : null;
   return h('div', { class: `msg ${assistant ? 'assistant' : 'user human'}`, 'data-idx': msg.idx },
     h('div', { class: `msg-body bubble${bare ? ' bare' : ''}` }, visible),
-    footer ? h('div', { class: 'msg-foot', text: footer }) : null);
+    footer || switcher ? h('div', { class: 'msg-foot' }, footer, switcher) : null);
+}
+
+/** Compact "‹ 2/3 ›" control on a human message that has rewind siblings; switching reloads the view. */
+function renderBranchSwitcher(view, msg) {
+  const { branch } = msg;
+  const step = (dir, text, name) => {
+    const target = siblingTarget(branch, dir, view.detail?.leaf);
+    return h('button', {
+      class: 'branch-btn', type: 'button', text, 'aria-label': name, 'data-step': dir,
+      disabled: !target,
+      onclick: () => switchBranch(view, target, dir),
+    });
+  };
+  return h('span', { class: 'branch-switch', role: 'group', title: '同一问题的回退分支', 'aria-label': '回退分支' },
+    step(-1, '‹', '上一个分支'),
+    h('span', { class: 'branch-label', 'aria-live': 'polite', text: branchLabel(branch) }),
+    step(1, '›', '下一个分支'));
+}
+
+/** Reload the view on the sibling's branch, scrolled to that message; the hash makes it back/forward friendly. */
+function switchBranch(view, target, dir) {
+  if (!target) return;
+  pendingFocus = { idx: target.idx, dir };
+  location.hash = agentHash(view.sid, target.idx, target.leaf);
 }
 
 /** Render one message; returns null when it only carried tool results (shown inside tool cards). */
@@ -679,7 +706,7 @@ function renderMessage(view, msg, from = 0) {
     else visible.push(renderBlock(view, ctx, block, system));
   });
   if (!visible.length) return null;
-  return system ? renderSystemRow(msg, visible) : renderBubble(msg, visible);
+  return system ? renderSystemRow(msg, visible) : renderBubble(view, msg, visible);
 }
 
 function renderMessages(view, messages) {
@@ -693,7 +720,7 @@ function renderMessages(view, messages) {
 
 // ===== Conversation view =====
 
-function createView({ sid, aid, at }) {
+function createView({ sid, aid, at, b }) {
   const base = aid ? `${agentPath(sid)}/subagents/${encodeURIComponent(aid)}` : agentPath(sid);
   return {
     id: ++state.viewSeq,
@@ -710,14 +737,17 @@ function createView({ sid, aid, at }) {
     hasMoreAfter: false, // true while the view is a window in the middle (jump mode)
     loadingOlder: false,
     loadingAfter: false,
-    summaryOpen: false, // header result summary expanded
-    metaOpen: false, // header secondary info expanded (narrow screens)
+    summaryOpen: false, // end-of-conversation result summary expanded
+    summaryKey: null, // rendered summary text, to skip no-op refreshes
     prompts: [], // human prompts from the prompts API
     promptsLoaded: false,
+    timelineCount: 0, // events reported by the timeline API (drives the topbar button)
+    openBranches: new Set(), // prompt idxs whose rewind versions are expanded in the drawer
     promptItems: new Map(), // prompt idx -> list element in the drawer
     currentPrompt: null, // idx of the prompt currently in view
     scrollFrame: 0,
     at: aid ? null : at,
+    pinned: aid ? null : b, // pinned branch leaf, or null to follow the latest path
     wasLive: false,
     toolSlots: new Map(), // tool_use id -> card parts
     pendingResults: new Map(), // tool_use id -> result that arrived before its card
@@ -741,6 +771,7 @@ function closeView() {
   view.observer?.disconnect();
   view.bottomObserver?.disconnect();
   resetPromptsUi();
+  resetTimelineUi();
   state.view = null;
 }
 
@@ -772,12 +803,12 @@ function buildViewDom(view) {
   const top = h('div', { class: 'top-status' });
   const bottom = h('div', { class: 'top-status' });
   const list = h('div', { class: 'stream' }, h('div', { class: 'state', text: '加载中…' }));
-  const scroller = h('div', { class: 'scroller' }, top, list, bottom);
-  view.els = { top, bottom, list, scroller };
+  const summary = h('div', { class: 'stream end-summary-slot' });
+  const scroller = h('div', { class: 'scroller' }, top, list, summary, bottom);
+  view.els = { top, bottom, list, summary, scroller };
   scroller.addEventListener('scroll', () => scheduleNavigatorUpdate(view), { passive: true });
   const stage = h('div', { class: 'stage' }, scroller, buildFabs(view));
-  const panel = view.aid ? null : buildTimelinePanel(view);
-  $('#view').replaceChildren(...[panel, stage].filter(Boolean));
+  $('#view').replaceChildren(stage);
 }
 
 function showWelcome() {
@@ -787,7 +818,10 @@ function showWelcome() {
 
 function showViewError(view, error) {
   const retry = h('button', { type: 'button', text: '重试', onclick: onRoute });
-  view.els.list.replaceChildren(h('div', { class: 'state error' }, `加载失败：${error.message}`, h('div', {}, retry)));
+  const latest = view.pinned
+    ? h('button', { type: 'button', text: '回到最新分支', onclick: () => { location.hash = agentHash(view.sid); } })
+    : null;
+  view.els.list.replaceChildren(h('div', { class: 'state error' }, `加载失败：${error.message}`, h('div', {}, retry, ' ', latest)));
 }
 
 function renderSubagentHeader(view, name) {
@@ -802,18 +836,21 @@ function renderSubagentHeader(view, name) {
   ];
 }
 
-/** Working directory text plus a one-click copy button (works on plain http via legacyCopy). */
-function renderCwd(cwd) {
-  const feedback = h('span', { class: 'cwd-feedback', 'aria-live': 'polite' });
+/** Folder icon + "路径" copy button for the working directory; the path itself is only exposed via the tooltip. */
+function renderCwdCopy(cwd) {
+  // The label doubles as the live region: it flashes "已复制" / "复制失败" in place of "路径"
+  const label = h('span', { class: 'copy-label', 'aria-live': 'polite', text: '路径' });
   const button = h('button', {
-    class: 'copy-btn', type: 'button', title: '复制路径', 'aria-label': '复制路径',
+    class: 'copy-btn', type: 'button', title: `复制工作目录路径：${cwd}`, 'aria-label': '复制工作目录路径',
     onclick: async () => {
-      if (await copyText(cwd)) flashLabel(feedback, '已复制');
-      else { flashLabel(feedback, '复制失败'); showManualCopy(cwd, button); }
+      if (await copyText(cwd)) flashLabel(label, '已复制');
+      else { flashLabel(label, '复制失败'); showManualCopy(cwd, button); }
+      button.classList.add('flashing'); // mobile shows the label only while it flashes
+      clearTimeout(Number(button.dataset.flash));
+      button.dataset.flash = setTimeout(() => button.classList.remove('flashing'), 1500);
     },
-  }, icon('copy'));
-  return h('span', { class: 'cwd-group' },
-    h('span', { class: 'mono', title: cwd, text: cwd }), button, feedback);
+  }, icon('folder'), label);
+  return h('span', { class: 'cwd-group' }, button);
 }
 
 function renderHeader(view) {
@@ -828,39 +865,46 @@ function renderHeader(view) {
     box.replaceChildren(...renderSubagentHeader(view, name));
     return;
   }
-  const metaItems = [
-    detail.cwd ? renderCwd(detail.cwd) : null,
-    detail.intent ? h('span', { text: detail.intent }) : null,
-    detail.title && detail.title !== name ? h('span', { text: detail.title }) : null,
-    detail.cost_usd != null ? h('span', { text: formatCost(detail.cost_usd) }) : null,
-    detail.total != null ? h('span', { text: `${detail.total} 条记录` }) : null,
-  ];
-  const moreBtn = h('button', {
-    class: 'more-btn',
-    type: 'button',
-    'aria-expanded': String(view.metaOpen),
-    text: view.metaOpen ? '收起' : '详情',
-    onclick: () => { view.metaOpen = !view.metaOpen; renderHeader(view); },
-  });
-  box.classList.toggle('meta-open', view.metaOpen);
+  // Re-rendering would drop the copy feedback / manual-copy input, so keep the existing group while the path is unchanged.
+  const prev = box.querySelector('.cwd-group');
+  const keep = prev && prev.dataset.cwd === detail.cwd ? prev : null;
+  const cwd = keep || (detail.cwd ? renderCwdCopy(detail.cwd) : null);
+  if (cwd && !keep) cwd.dataset.cwd = detail.cwd;
   box.replaceChildren(
-    h('div', { class: 'head-title' }, h('span', { class: 'text', text: name }), statusBadge(detail.status), moreBtn),
-    h('div', { class: 'head-extra' }, h('div', { class: 'head-meta' }, metaItems), renderResultSummary(view, detail)));
+    h('div', { class: 'head-title' }, h('span', { class: 'text', text: name }), statusBadge(detail.status), cwd));
 }
 
-/** Short result (fallback: detail) line; expands to the full text as Markdown when it is longer. */
-function renderResultSummary(view, detail) {
-  const full = (detail.result || detail.detail || '').trim();
-  if (!full) return null;
+/** Result (fallback: detail) text for the end-of-conversation block, or '' when there is none. */
+const resultText = (detail) => (detail?.result || detail?.detail || '').trim();
+
+/** Short first line that expands to the full text as Markdown when the text is longer. */
+function renderResultSummary(view, full) {
   const short = clip(firstLine(full), 160);
-  if (short === full) return h('div', { class: 'head-summary', text: full });
+  const label = h('div', { class: 'end-summary-label', text: '结果摘要' });
+  if (short === full) return h('div', { class: 'end-summary' }, label, h('div', { class: 'end-summary-text', text: full }));
   const body = h('div', { class: 'md summary-body' });
   body.innerHTML = renderMarkdown(full);
-  return h('details', {
-    class: 'head-summary',
+  return h('div', { class: 'end-summary' }, label, h('details', {
     open: view.summaryOpen,
     ontoggle: (event) => { view.summaryOpen = event.currentTarget.open; },
-  }, h('summary', { text: short }), body);
+  }, h('summary', { text: short }), body));
+}
+
+/**
+ * Keep the result summary as the last block of the scroll content. Shown only on the default path of a main view
+ * once the window reaches the end; refreshed in place (no list re-render) when the text changes.
+ */
+function renderEndSummary(view) {
+  const slot = view.els.summary;
+  if (!slot) return;
+  const full = view.aid || view.pinned || view.hasMoreAfter ? '' : resultText(view.detail);
+  if (full === view.summaryKey) return;
+  const { scroller } = view.els;
+  const stick = isAtBottom(scroller);
+  view.summaryKey = full;
+  slot.replaceChildren(...(full ? [renderResultSummary(view, full)] : []));
+  if (stick && !view.hasMoreAfter) scrollToBottom(scroller);
+  updateNavigator(view);
 }
 
 function indexSubagents(view, subagents) {
@@ -917,9 +961,21 @@ function applyInitialPage(view, page) {
   setTopStatus(view, view.hasMoreBefore ? '' : '已到对话开头');
   if (view.at !== null) scrollToMessage(view, view.at);
   else scrollToBottom(scroller);
+  restoreBranchFocus(view);
   if (view.hasMoreBefore) observeTop(view);
   if (view.hasMoreAfter) observeBottom(view);
+  renderEndSummary(view);
   updateNavigator(view);
+}
+
+/** After a branch switch, focus the same direction button on the target message (or its sibling when disabled). */
+function restoreBranchFocus(view) {
+  const focus = pendingFocus;
+  pendingFocus = null;
+  if (!focus || focus.idx !== view.at) return;
+  const buttons = [...(findMessage(view, focus.idx)?.querySelectorAll('.branch-btn') || [])];
+  const same = buttons.find((b) => Number(b.dataset.step) === focus.dir && !b.disabled);
+  (same || buttons.find((b) => !b.disabled))?.focus({ preventScroll: true });
 }
 
 const findMessage = (view, idx) => view.els.list.querySelector(`:scope > [data-idx="${idx}"]`);
@@ -942,7 +998,7 @@ async function loadOlder(view) {
   view.loadingOlder = true;
   setTopStatus(view, '加载更早的消息…');
   try {
-    const page = await api(`${view.base}/messages${query({ before: view.minIdx, limit: state.config.page_size })}`);
+    const page = await api(`${view.base}/messages${query({ before: view.minIdx, limit: state.config.page_size, leaf: view.pinned })}`);
     if (!isActive(view)) return;
     trackRange(view, page.messages);
     view.hasMoreBefore = page.has_more_before;
@@ -991,8 +1047,12 @@ function observeBottom(view) {
 async function fetchNewer(view, overlap) {
   const { page_size: limit } = state.config;
   const params = view.maxIdx === null ? { limit } : { after: view.maxIdx - (overlap ? 1 : 0), limit };
-  const page = await api(`${view.base}/messages${query(params)}`);
+  const page = await api(`${view.base}/messages${query({ ...params, leaf: view.pinned })}`);
   if (!isActive(view)) return null;
+  // Following the latest path: if our last message is gone from it, a rewind happened.
+  if (overlap && !view.pinned && view.maxIdx !== null && !page.messages.some((m) => m.idx === view.maxIdx)) {
+    return { rewound: true };
+  }
   const grown = page.messages.filter((m) => view.blockCounts.has(m.idx)
     && m.blocks.length > view.blockCounts.get(m.idx));
   const fresh = page.messages.filter((m) => view.maxIdx === null || m.idx > view.maxIdx);
@@ -1000,12 +1060,20 @@ async function fetchNewer(view, overlap) {
   return { page, fresh };
 }
 
-/** Live polling: pull everything newer than what we have. Only used once the view reached the end. */
+/** Live polling: pull everything newer than what we have. Only used once the view reached the end. Returns true on rewind. */
 async function loadNewer(view) {
   for (;;) {
     const result = await fetchNewer(view, true);
-    if (!result || !result.page.has_more_after || !result.fresh.length) return;
+    if (!result) return false;
+    if (result.rewound) return true;
+    if (!result.page.has_more_after || !result.fresh.length) return false;
   }
+}
+
+/** The latest path changed under us (rewind): reopen the view on the new path, dropping any jump target. */
+function reloadLatest(view) {
+  history.replaceState(null, '', agentHash(view.sid));
+  onRoute();
 }
 
 /** Jump mode: lazily load the next page below the window until the end is reached. */
@@ -1025,6 +1093,7 @@ async function loadAfter(view) {
   } finally {
     view.loadingAfter = false;
     if (isActive(view)) {
+      renderEndSummary(view);
       if (view.hasMoreAfter) {
         view.bottomObserver.unobserve(view.els.bottom);
         view.bottomObserver.observe(view.els.bottom);
@@ -1078,14 +1147,19 @@ async function tick(view) {
       const subagents = await fetchSubagents(view);
       if (!isActive(view)) return;
       indexSubagents(view, subagents);
-      if (!view.hasMoreAfter) await loadNewer(view);
+      const rewound = !view.hasMoreAfter && await loadNewer(view);
       if (!isActive(view)) return;
+      if (rewound) {
+        reloadLatest(view);
+        return;
+      }
       if (isPromptsOpen()) await refreshPrompts(view);
       if (!isActive(view)) return;
       await refreshTimeline(view);
       if (!isActive(view)) return;
     }
     renderHeader(view);
+    renderEndSummary(view);
   } catch {
     // Transient errors are ignored; the next tick retries.
   }
@@ -1097,6 +1171,7 @@ async function openView(route) {
   state.view = view;
   $('#header-content').replaceChildren();
   $('#prompts-btn').hidden = Boolean(view.aid);
+  $('#timeline-btn').hidden = true; // shown once the timeline has events
   buildViewDom(view);
   try {
     const [detail, subagents] = await Promise.all([api(agentPath(view.sid)), fetchSubagents(view)]);
@@ -1108,10 +1183,11 @@ async function openView(route) {
 
     const limit = state.config.page_size;
     const params = view.at !== null ? { around: view.at, limit } : { limit };
-    const page = await api(`${view.base}/messages${query(params)}`);
+    const page = await api(`${view.base}/messages${query({ ...params, leaf: view.pinned })}`);
     if (!isActive(view)) return;
     applyInitialPage(view, page);
     refreshPrompts(view);
+    refreshTimeline(view);
     scheduleTick(view);
   } catch (error) {
     if (isActive(view)) showViewError(view, error);
@@ -1120,12 +1196,22 @@ async function openView(route) {
 
 // ===== Question navigator =====
 
-const isPromptsOpen = () => document.body.classList.contains('prompts-open');
+// Side drawers (问题 / 时间线) share one open/close mechanism: a body class `<name>-open`
+// drives the panel and backdrop CSS, and at most one drawer is open at a time.
+const DRAWERS = ['prompts', 'timeline'];
 
-function setPromptsOpen(open) {
-  document.body.classList.toggle('prompts-open', open);
-  $('#prompts-btn').setAttribute('aria-expanded', String(open));
+const isDrawerOpen = (name) => document.body.classList.contains(`${name}-open`);
+
+function setDrawerOpen(name, open) {
+  if (open) for (const other of DRAWERS) if (other !== name) setDrawerOpen(other, false);
+  document.body.classList.toggle(`${name}-open`, open);
+  $(`#${name}-btn`).setAttribute('aria-expanded', String(open));
 }
+
+const closeDrawers = () => DRAWERS.forEach((name) => setDrawerOpen(name, false));
+const anyDrawerOpen = () => DRAWERS.some(isDrawerOpen);
+const isPromptsOpen = () => isDrawerOpen('prompts');
+const setPromptsOpen = (open) => setDrawerOpen('prompts', open);
 
 /** Clear the drawer and hide its header button; called when a view goes away. */
 function resetPromptsUi() {
@@ -1184,7 +1270,7 @@ function scheduleNavigatorUpdate(view) {
 function goToPrompt(view, idx) {
   const el = findMessage(view, idx);
   if (!el) {
-    location.hash = agentHash(view.sid, idx);
+    location.hash = agentHash(view.sid, idx, view.pinned);
     return;
   }
   el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1202,17 +1288,51 @@ async function stepPrompt(view, direction) {
 /** Jump mode holds only a window of the transcript, so reload the latest page instead of scrolling. */
 function jumpToBottom(view) {
   if (view.hasMoreAfter) {
-    history.replaceState(null, '', agentHash(view.sid));
+    history.replaceState(null, '', agentHash(view.sid, null, view.pinned));
     onRoute();
     return;
   }
   view.els.scroller.scrollTo({ top: view.els.scroller.scrollHeight, behavior: 'smooth' });
 }
 
+/** Collapsible list of every rewind version of a question; picking another one switches branch. */
+function renderPromptBranches(view, prompt) {
+  const { branch } = prompt;
+  const open = view.openBranches.has(prompt.idx);
+  const list = h('div', { class: 'prompt-alts', role: 'list', hidden: !open },
+    branch.siblings.map((sib, i) => {
+      const label = h('span', { class: 'prompt-alt-text', text: sib.text || '（空）' });
+      const num = h('span', { class: 'prompt-alt-num', text: `${i + 1}.` });
+      if (sib.current) {
+        return h('div', { class: 'prompt-alt current', role: 'listitem', 'aria-current': 'true' }, num, label);
+      }
+      return h('button', {
+        class: 'prompt-alt', type: 'button', role: 'listitem',
+        onclick: () => {
+          const target = siblingJump(sib, view.detail?.leaf);
+          if (matchMedia('(max-width: 767px)').matches) setPromptsOpen(false);
+          switchBranch(view, target, 0);
+        },
+      }, num, label);
+    }));
+  const toggle = h('button', {
+    class: 'prompt-branch', type: 'button', 'aria-expanded': String(open),
+    title: '同一问题的回退分支', text: `分支 ${branchLabel(branch)}`,
+    onclick: () => {
+      const now = !view.openBranches.has(prompt.idx);
+      if (now) view.openBranches.add(prompt.idx);
+      else view.openBranches.delete(prompt.idx);
+      toggle.setAttribute('aria-expanded', String(now));
+      list.hidden = !now;
+    },
+  });
+  return [toggle, list];
+}
+
 function renderPromptItem(view, prompt, number) {
-  const el = h('a', {
+  const link = h('a', {
     class: 'prompt-item',
-    href: agentHash(view.sid, prompt.idx),
+    href: agentHash(view.sid, prompt.idx, view.pinned),
     onclick: (event) => {
       event.preventDefault();
       goToPrompt(view, prompt.idx);
@@ -1223,8 +1343,8 @@ function renderPromptItem(view, prompt, number) {
     h('span', { class: 'prompt-num', text: `#${number}` }),
     h('span', { text: formatTime(prompt.timestamp) })),
   h('div', { class: 'prompt-text', text: prompt.text || '（空）' }));
-  view.promptItems.set(prompt.idx, el);
-  return el;
+  view.promptItems.set(prompt.idx, link);
+  return h('div', { class: 'prompt-entry' }, link, prompt.branch ? renderPromptBranches(view, prompt) : null);
 }
 
 function renderPrompts(view) {
@@ -1241,7 +1361,7 @@ function renderPrompts(view) {
 async function refreshPrompts(view) {
   if (view.aid) return;
   try {
-    const { prompts } = await api(`${agentPath(view.sid)}/prompts`);
+    const { prompts } = await api(`${agentPath(view.sid)}/prompts${query({ leaf: view.pinned })}`);
     if (!isActive(view)) return;
     if (!view.promptsLoaded || prompts.length !== view.prompts.length) {
       view.prompts = prompts;
@@ -1260,8 +1380,15 @@ function initNavigator() {
     setPromptsOpen(open);
     if (open && state.view?.els.prev) refreshPrompts(state.view);
   });
-  $('#prompts-close').addEventListener('click', () => setPromptsOpen(false));
-  $('#prompts-backdrop').addEventListener('click', () => setPromptsOpen(false));
+  $('#timeline-btn').addEventListener('click', () => {
+    const open = !isDrawerOpen('timeline');
+    setDrawerOpen('timeline', open);
+    if (open && state.view) refreshTimeline(state.view, true);
+  });
+  for (const name of DRAWERS) {
+    $(`#${name}-close`).addEventListener('click', () => setDrawerOpen(name, false));
+    $(`#${name}-backdrop`).addEventListener('click', () => setDrawerOpen(name, false));
+  }
   document.addEventListener('keydown', onNavigatorKey);
 }
 
@@ -1269,8 +1396,8 @@ function initNavigator() {
 function onNavigatorKey(event) {
   if (event.key === 'Escape') {
     const sidebarOpen = document.body.classList.contains('sidebar-open');
-    if (isPromptsOpen() || sidebarOpen) {
-      setPromptsOpen(false);
+    if (anyDrawerOpen() || sidebarOpen) {
+      closeDrawers();
       document.body.classList.remove('sidebar-open');
       return;
     }
@@ -1289,14 +1416,12 @@ function onNavigatorKey(event) {
 
 // ===== Progress timeline =====
 
-/** Collapsible panel above the stream; content loads on first open and refreshes on the live tick. */
-function buildTimelinePanel(view) {
-  const title = h('span', { text: '进度时间线' });
-  const body = h('div', { class: 'timeline-body' });
-  const panel = h('details', { class: 'timeline' }, h('summary', {}, title), body);
-  panel.addEventListener('toggle', () => { if (panel.open) refreshTimeline(view); });
-  view.els.timeline = { panel, title, body };
-  return panel;
+/** Hide the topbar button and clear the drawer; called when a view goes away. */
+function resetTimelineUi() {
+  $('#timeline-btn').hidden = true;
+  $('#timeline-count').textContent = '';
+  $('#timeline-title').textContent = '进度时间线';
+  $('#timeline-list').replaceChildren();
 }
 
 function renderTimelineEvent(event, wasOpen) {
@@ -1312,13 +1437,12 @@ function renderTimelineEvent(event, wasOpen) {
     h('details', { open: wasOpen }, h('summary', { text: event.truncated ? '详情（已截断）' : '详情' }), body));
 }
 
-function renderTimeline(view, events) {
-  const { title, body } = view.els.timeline;
+function renderTimeline(events) {
+  const body = $('#timeline-list');
   const openIdx = new Set([...body.querySelectorAll('li > details[open]')].map((el) => Number(el.parentNode.dataset.i)));
   const stick = !body.firstChild || body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-  title.textContent = `进度时间线（${events.length}）`;
   if (!events.length) {
-    body.replaceChildren(h('div', { class: 'muted', text: '暂无进度事件。' }));
+    body.replaceChildren(h('div', { class: 'state', text: '暂无进度事件。' }));
     return;
   }
   const items = events.map((event, i) => {
@@ -1330,15 +1454,27 @@ function renderTimeline(view, events) {
   if (stick) body.scrollTop = body.scrollHeight;
 }
 
-async function refreshTimeline(view) {
-  const timeline = view.els.timeline;
-  if (!timeline?.panel.open) return;
+/**
+ * Fetch the timeline and update the topbar count; the list is rendered only while the drawer is open.
+ * While closed it only polls when the button is still hidden (no events yet), so new events can surface it.
+ */
+async function refreshTimeline(view, force = false) {
+  if (view.aid) return;
+  const open = isDrawerOpen('timeline');
+  if (!force && !open && view.timelineCount > 0) return;
   try {
     const data = await api(`${agentPath(view.sid)}/timeline${query({ limit: 200 })}`);
-    if (isActive(view)) renderTimeline(view, data.events || []);
+    if (!isActive(view)) return;
+    const events = data.events || [];
+    view.timelineCount = events.length;
+    $('#timeline-btn').hidden = !events.length;
+    $('#timeline-count').textContent = events.length ? ` ${events.length}` : '';
+    $('#timeline-title').textContent = `进度时间线（${events.length}）`;
+    if (isDrawerOpen('timeline')) renderTimeline(events);
   } catch (error) {
-    if (isActive(view) && !timeline.body.firstChild) {
-      timeline.body.replaceChildren(h('div', { class: 'state error', text: `加载时间线失败：${error.message}` }));
+    const body = $('#timeline-list');
+    if (isActive(view) && isDrawerOpen('timeline') && !body.firstChild) {
+      body.replaceChildren(h('div', { class: 'state error', text: `加载时间线失败：${error.message}` }));
     }
   }
 }
@@ -1346,7 +1482,6 @@ async function refreshTimeline(view) {
 // ===== Page views (search, stats) =====
 
 function setPageHeader(title, subtitle) {
-  $('#header-content').classList.remove('meta-open');
   $('#header-content').replaceChildren(
     h('div', { class: 'head-title' }, h('span', { class: 'text', text: title })),
     subtitle ? h('div', { class: 'head-meta' }, h('span', { text: subtitle })) : null);
@@ -1367,8 +1502,9 @@ const ROLE_LABELS = { user: '用户', assistant: '助手' };
 
 function renderHit(hit, needle) {
   const meta = [ROLE_LABELS[hit.role] || hit.role, hit.block_type, formatTime(hit.timestamp)].filter(Boolean).join(' · ');
-  return h('a', { class: 'hit', href: agentHash(hit.session_id, hit.idx) },
-    h('div', { class: 'hit-meta', text: meta }),
+  const rewound = hitLeaf(hit) !== null;
+  return h('a', { class: 'hit', href: agentHash(hit.session_id, hit.idx, hitLeaf(hit)) },
+    h('div', { class: 'hit-meta' }, meta, rewound ? h('span', { class: 'hit-branch', text: '已回退的分支' }) : null),
     h('div', { class: 'hit-snippet' }, highlight(hit.snippet || '', needle)));
 }
 

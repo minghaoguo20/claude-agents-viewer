@@ -26,6 +26,16 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg.claude_home, Path("~/.claude").expanduser())
         self.assertEqual((cfg.max_block_chars, cfg.poll_interval_ms), (100, 500))
 
+    def test_cache_budget(self) -> None:
+        self.assertEqual(load_config(write_ini(self.dir)).cache_max_mb, 512)
+        path = self.dir / "d.ini"
+        path.write_text("[viewer]\ncache_max_mb = 64\n")
+        self.assertEqual(load_config(path).cache_max_mb, 64)
+        for bad in ("0", "-5", "abc"):
+            path.write_text(f"[viewer]\ncache_max_mb = {bad}\n")
+            with self.assertRaises(ValueError):
+                load_config(path)
+
     def test_loopback_hosts_accepted(self) -> None:
         for host in ("127.0.0.1", "localhost", "::1"):
             self.assertEqual(load_config(write_ini(self.dir, host)).host, host)

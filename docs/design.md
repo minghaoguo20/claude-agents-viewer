@@ -68,6 +68,7 @@ class Config:
     page_size: int
     max_block_chars: int
     poll_interval_ms: int
+    cache_max_mb: int        # 默认 512，必须为正整数
 
 def load_config(path: Path | None = None) -> Config
 ```
@@ -86,6 +87,7 @@ home = ~/.claude
 page_size = 50
 max_block_chars = 4000
 poll_interval_ms = 3000
+cache_max_mb = 512
 ```
 
 ### sources.py
@@ -213,7 +215,7 @@ def list_subagents(session_dir: Path) -> list[dict]
 
 ### 7.3 前端
 - 头部显示 `result`（无则 `detail`）摘要，可展开查看全文（Markdown）。
-- “进度时间线”抽屉/折叠面板：每条事件显示状态徽标、相对时间、detail；`text` 可展开（Markdown）。live 时随轮询刷新。
+- “进度时间线”抽屉：头部“时间线 N”按钮（与“问题”并列，无事件时隐藏，仅主视图）打开右侧抽屉（移动端底部抽屉），每条事件显示状态徽标、相对时间、detail；`text` 可展开（Markdown），刷新时保留展开状态。与问题抽屉共用开关逻辑（`DRAWERS`，body 类 `<name>-open`），同时只开一个；Esc/点击遮罩关闭。首次进入视图取一次事件数，打开后内容随轮询刷新。
 - 状态徽标覆盖：`working`/`busy`（绿色脉冲）、`idle`、`done`、`blocked`（橙）、`shell`、`failed`/`error`（红）、其他/unknown（灰）。
 
 ## 8. v0.3：全文搜索 + 花费统计
@@ -265,4 +267,36 @@ def list_subagents(session_dir: Path) -> list[dict]
 - **搜索合一**：一个输入框——输入即过滤侧边栏；回车执行全文搜索。
 - **界面中文化**：所有界面文字改为中文。
 - **工具卡片增强**：Edit 的 old_string/new_string 以 diff 样式（删除红、新增绿）显示；Write 的 content 以代码块显示。
-- **移动端**：使用 `100dvh`；触控目标 ≥ 40px；输入框字号 ≥16px（避免 iOS 缩放）；`env(safe-area-inset-*)`；表格与代码块在气泡内横向滚动；头部在窄屏下精简（次要信息收入可展开区域）。
+- **移动端**：使用 `100dvh`；触控目标 ≥ 40px；输入框字号 ≥16px（避免 iOS 缩放）；`env(safe-area-inset-*)`；表格与代码块在气泡内横向滚动；
+- **精简头部**：主视图头部只保留 agent 名称、状态徽标和一个“文件夹图标 + 路径”复制按钮（移动端仅图标；完整路径仅在 tooltip 中，不直接显示；点击后按钮文字短暂变为“已复制/复制失败”；http 下仍可复制，失败时回退为手动复制框）。意图、标题、花费、记录数不再显示，原“详情/收起”区域已移除。
+- **结果摘要置底**：`result`（缺省回退 `detail`）作为消息流最后一块内容显示（带“结果摘要”标签，随内容滚动，非吸附）；首行（截断 160 字）可展开为 Markdown 全文。仅在默认路径（未固定分支）、已加载到路径末尾（`has_more_after` 为假）的主视图显示；轮询刷新 detail 时原位更新，文本未变则不动；子 agent 视图不显示。
+
+## 10. 回溯分支（rewind branches）
+
+Claude Code 的 transcript 是树（每条记录有 `uuid` / `parentUuid`）。用户回溯重问时，新的人类消息与旧消息拥有相同的 `parentUuid`，旧分支仍留在文件里。默认只显示一条路径（根 → 叶），可切换到兄弟分支。
+
+### 10.1 数据模型（`viewer/branches.py` + `Transcript`）
+- **缓存内存上界**：`TranscriptCache` 是 LRU，估算占用 = 各 Transcript 已解析的文件字节数（`parsed_bytes`）之和；超过 `cache_max_mb` 时从最久未用者开始淘汰，最近使用的一项永不淘汰（即使它单独超预算）。实测常驻内存约为文件大小的 0.2–0.4 倍（20 MB 文件约 6.5 MB），按 1 倍估算留有余量。淘汰只丢弃缓存引用，正在处理请求的线程仍持有有效对象；下次访问重新解析，结果不变。搜索/统计这类批量扫描用 `get(path, keep=False)`：已缓存的直接用，未缓存的临时解析、用完即弃，因此不会挤掉热点会话。
+- `Transcript._nodes`：`uuid -> Node(parent, msg, human)`，**所有**带 `uuid` 的记录都入表（attachment、system 等也在链上），在 `_ingest_line` 中增量维护；有新行时丢弃派生缓存 `BranchIndex`。
+- `parent` = `parentUuid`；为空且 `logicalParentUuid` 是已知 uuid 时取后者（上下文压缩后路径不被截断）。
+- 同一 `message.id` 被合并的多条 assistant 记录，每个 uuid 都映射到同一个消息 idx（下一条的 `parentUuid` 指向最后一片）。
+- **分支点**仅指：同一 `parentUuid` 下 ≥2 条 `origin == "human"` 的 user 消息。并行工具调用产生的同父兄弟不是分支，路径 = 叶的祖先链，自然正确。
+- 默认叶 = 文件中最后一条 user/assistant 消息的 uuid。叶的“最新叶”（`latest_leaf_under`）= 其子树内文件序最后的消息，一次反向扫描 O(n) 求得并缓存。
+- 路径回溯带环/缺父保护。完全没有 `parentUuid` 的（线性/旧）文件：路径 = 全部消息，无 `branch` 字段，行为同旧版。
+- 消息 `idx` 仍是全局文件序，路径上 idx 可能有空洞；`page()` 的 `before/after/around/has_more_*` 全部按 idx 比较（`around` 取 idx ≥ 目标的第一条）。
+
+### 10.2 API 变更
+- `GET /api/agents/<sid>/messages?leaf=<uuid>&before|after|around=&limit=`（subagent 的 messages 同样支持）：`leaf` 省略 = 默认叶；未知 uuid → 400。返回在原字段（`messages`、`total` = 路径消息数、`has_more_*`）之外加 `"leaf"`（实际使用的叶 uuid）。
+- 路径上有 ≥2 个兄弟的人类消息带 `"branch": {"index": 1起, "count": n, "siblings": [{"uuid", "idx", "leaf"}...]}`（兄弟按文件序，含自己；`leaf` 为该兄弟子树的最新叶，切换时作为 `?leaf=`）。其他消息无 `branch` 键。
+- `GET /api/agents/<sid>/prompts?leaf=<uuid>`：只含所选路径上的问题；返回加 `"leaf"`；未知 → 400。带分支的问题另有 `"branch": {"index", "count", "siblings": [{"uuid", "idx", "leaf", "text", "current"}]}`，`text` 为该兄弟自己的问题预览，`current` 标记当前路径上的那个；无分支的问题没有 `branch` 键。
+- `GET /api/agents/<sid>`：`total` 为默认路径长度，新增 `"leaf"`（默认叶 uuid），前端轮询时据此发现回溯。
+- `GET /api/search`：每条命中新增 `"leaf"`（命中消息子树的最新叶，用于打开含该命中的分支）与 `"on_default_path"`。搜索仍扫描文件的全部消息（含被回溯的分支）。
+- 统计 / 花费接口不变；`/messages/<idx>/blocks/<bidx>` 仍用全局 idx。
+
+### 10.3 前端
+- 纯逻辑在 `static/branch.js`（hash 构造/解析、兄弟选择，带 `tests/js/branch.test.mjs`）。
+- 路由 `#/agent/<sid>?at=<idx>&b=<leaf>`：`b` 为固定的分支叶，缺省 = 跟随最新路径；subagent 视图忽略 `at`/`b`。所有 messages / prompts 请求都带 `leaf=b`。
+- 带 `branch` 的人类消息在时间旁显示 `‹ 2/3 ›`（两端禁用，不循环）。点击即改 hash 为 `at=<兄弟 idx>&b=<兄弟 leaf>`（leaf 等于默认叶时省略 `b`），由 `onRoute` 整体重载视图，因此前进/后退/分享都可用，旧视图的在途请求会被 `isActive` 丢弃。
+- 轮询：未固定分支时，以 `after=<maxIdx-1>` 拉取；若响应中已不含当前最后一条消息，说明发生了回溯，丢弃 `at` 并重载最新路径。已固定的分支不会自动解除固定。
+- 问题目录：带 `branch` 的问题在行下显示“分支 2/3”开关（`aria-expanded`），展开后列出所有版本的预览（当前版本高亮），点击其他版本与消息级切换器同样改 hash（`at=<兄弟 idx>&b=<兄弟 leaf>`，等于默认叶则省略 `b`，用 `siblingJump`）。展开状态保存在 view 内，`[` `]` 仍只在当前路径的问题间移动。
+- 搜索：`on_default_path === false` 的命中带 `b=<hit.leaf>` 跳转，并显示“已回退的分支”标记。

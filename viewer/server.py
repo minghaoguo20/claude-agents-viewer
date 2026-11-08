@@ -145,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "/messages":
             return self.messages(agent.transcript, query)
         if rest == "/prompts":
-            return self.prompts(agent)
+            return self.prompts(agent, query)
         if rest == "/timeline":
             return self.timeline(agent, query)
         if rest == "/subagents":
@@ -184,8 +184,20 @@ class Handler(BaseHTTPRequestHandler):
         total = 0
         if agent.transcript is not None:
             tr = self.server.cache.get(agent.transcript)
-            title, cost, total = tr.title, tr.cost_usd, len(tr.messages)
-        self.send_json({**data, "title": title, "cost_usd": cost, "total": total})
+            leaf, path = tr.view()
+            title, cost, total = tr.title, tr.cost_usd, len(path)
+        self.send_json({**data, "title": title, "cost_usd": cost, "total": total,
+                        "leaf": leaf})
+
+    def branch_view(self, transcript: Path, query: dict[str, list[str]]
+                    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """(leaf, path messages) for the optional ?leaf= parameter; 400 if unknown."""
+        values = query.get("leaf")
+        try:
+            leaf = values[0] if values and values[0] else None
+            return self.server.cache.get(transcript).view(leaf)
+        except KeyError:
+            raise HttpError(400, "unknown leaf") from None
 
     def messages(self, transcript: Path | None, query: dict[str, list[str]]) -> None:
         if transcript is None:
@@ -195,15 +207,16 @@ class Handler(BaseHTTPRequestHandler):
         before, after, around = (int_param(query, k) for k in ("before", "after", "around"))
         if sum(v is not None for v in (before, after, around)) > 1:
             raise HttpError(400, "before, after and around are mutually exclusive")
-        msgs = self.server.cache.get(transcript).messages
-        self.send_json(page(msgs, before=before, after=after, around=around, limit=limit,
-                            max_block_chars=cfg.max_block_chars))
+        leaf, msgs = self.branch_view(transcript, query)
+        self.send_json({**page(msgs, before=before, after=after, around=around, limit=limit,
+                               max_block_chars=cfg.max_block_chars), "leaf": leaf})
 
-    def prompts(self, agent: AgentInfo) -> None:
+    def prompts(self, agent: AgentInfo, query: dict[str, list[str]]) -> None:
         if agent.transcript is None:
             raise HttpError(404, "no transcript")
-        msgs = self.server.cache.get(agent.transcript).messages
-        self.send_json({"prompts": list_prompts(msgs)})
+        leaf, msgs = self.branch_view(agent.transcript, query)
+        everything = self.server.cache.get(agent.transcript).messages
+        self.send_json({"prompts": list_prompts(msgs, everything), "leaf": leaf})
 
     def timeline(self, agent: AgentInfo, query: dict[str, list[str]]) -> None:
         if not NAME_RE.match(agent.job_id):
@@ -267,7 +280,7 @@ class ViewerServer(ThreadingHTTPServer):
         super().__init__((config.host, config.port), Handler)
         self.config = config
         self.static_dir = static_dir
-        self.cache = TranscriptCache()
+        self.cache = TranscriptCache(config.cache_max_mb * 1024 * 1024)
 
 
 def make_server(config: Config, static_dir: Path | None = None) -> ThreadingHTTPServer:

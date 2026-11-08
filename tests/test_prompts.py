@@ -60,6 +60,18 @@ class PreviewTest(unittest.TestCase):
         self.assertEqual([p["idx"] for p in out], [0, 3])
         self.assertEqual(out[1], {"idx": 3, "timestamp": "t", "text": "m3"})
 
+    def test_list_prompts_branch_siblings(self) -> None:
+        def m(idx: int, text_: str, **extra: object) -> dict:
+            return {"idx": idx, "role": "user", "origin": "human", "timestamp": "t",
+                    "blocks": text(text_), **extra}
+        full = [m(0, "old"), m(1, "new")]
+        sib = [{"uuid": "u0", "idx": 0, "leaf": "l0"}, {"uuid": "u1", "idx": 1, "leaf": "l1"}]
+        shown = {**full[1], "branch": {"index": 2, "count": 2, "siblings": sib}}
+        out = list_prompts([shown], full)
+        self.assertEqual(out[0]["branch"], {"index": 2, "count": 2, "siblings": [
+            {"uuid": "u0", "idx": 0, "leaf": "l0", "text": "old", "current": False},
+            {"uuid": "u1", "idx": 1, "leaf": "l1", "text": "new", "current": True}]})
+
 
 if __name__ == "__main__":
     unittest.main()
