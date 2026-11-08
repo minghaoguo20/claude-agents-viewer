@@ -9,6 +9,10 @@
  *       <button type="button" class="md-copy" data-copy>复制</button></div>
  *     <pre class="code"><code>ESCAPED CODE</code></pre>
  *   </div>
+ * Blocks of 2..500 lines (a single trailing empty line ignored) are line-numbered; the numbers come from
+ * a CSS counter, so they are not in the DOM text and copying never includes them:
+ *   <pre class="code ln ln-N"><code><span class="ln-row">LINE\n</span>...<span class="ln-row">LAST</span></code></pre>
+ * (N = digit count of the line total, min 2). textContent of <code> equals the original code exactly.
  * With event delegation: on click of `button.md-copy[data-copy]`, copy
  * `button.closest('.md-code').querySelector('code').textContent`.
  *
@@ -83,11 +87,37 @@ function extractBlocks(lines) {
   return out;
 }
 
+export const LINE_NUMBER_MIN_LINES = 2;
+export const LINE_NUMBER_MAX_LINES = 500;
+
+/**
+ * Line-number markup for a code string. Returns null when the block should stay plain
+ * (fewer than MIN or more than MAX lines), else { html, digits, lines }.
+ * html is built from escapeHtml output only, safe for innerHTML of a <code> or <pre>.
+ */
+export function numberCode(code) {
+  const parts = String(code).split('\n');
+  const trailing = parts.length > 1 && parts[parts.length - 1] === '';
+  if (trailing) parts.pop();
+  if (parts.length < LINE_NUMBER_MIN_LINES || parts.length > LINE_NUMBER_MAX_LINES) return null;
+  const last = parts.length - 1;
+  const html = parts
+    .map((line, i) => `<span class="ln-row">${escapeHtml(line)}${i < last || trailing ? '\n' : ''}</span>`)
+    .join('');
+  return { html, digits: Math.max(2, String(parts.length).length), lines: parts.length };
+}
+
 function codeBlock(code, info) {
   const lang = info.split(/\s+/)[0].replace(/[^\w+#.-]/g, '');
   const label = lang ? `<span class="md-lang">${lang}</span>` : '';
   return `<div class="md-code"><div class="md-code-head">${label}<button type="button" class="md-copy" data-copy>复制</button></div>`
-    + `<pre class="code"><code>${escapeHtml(code)}</code></pre></div>`;
+    + `${codePre(code)}</div>`;
+}
+
+function codePre(code) {
+  const n = numberCode(code);
+  if (!n) return `<pre class="code"><code>${escapeHtml(code)}</code></pre>`;
+  return `<pre class="code ln ln-${n.digits}"><code>${n.html}</code></pre>`;
 }
 
 /** Stash inline code and inline math so no other syntax touches their content. */

@@ -140,7 +140,7 @@ button { font: inherit; color: inherit; }
 .agent-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .agent-name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-sub { display: flex; gap: 8px; margin-top: 2px; font-size: 12px; color: var(--muted); }
-.agent-intent { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-summary { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pin { color: var(--warn); font-size: 12px; }
 
 .badge {
@@ -358,6 +358,23 @@ pre.code {
   overflow: auto;
 }
 .msg.user pre.code { background: rgba(0, 0, 0, 0.28); color: inherit; }
+
+/* Line numbers: CSS counter on pre, one block per line; gutter is not DOM text. */
+pre.code.ln { counter-reset: ln; --ln-w: 2ch; --ln-gap: 12px; --ln-pad: 6px; }
+pre.code.ln-3 { --ln-w: 3ch; }
+pre.code.ln-4 { --ln-w: 4ch; }
+.ln-row { display: block; position: relative; counter-increment: ln; padding-left: calc(var(--ln-w) + var(--ln-gap)); }
+.ln-row::before {
+  content: counter(ln);
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: var(--ln-w); padding-right: var(--ln-pad);
+  text-align: right; font-variant-numeric: tabular-nums;
+  color: var(--muted); border-right: 1px solid rgba(128, 128, 128, 0.3);
+  user-select: none; -webkit-user-select: none; pointer-events: none;
+}
+.msg.user pre.code.ln .ln-row::before { color: inherit; opacity: 0.6; }
+pre.code.nowrap .ln-row { min-width: max-content; }
+@media (max-width: 767px) { pre.code.ln { --ln-gap: 9px; --ln-pad: 4px; } }
 
 /* ===== Thinking and tool cards ===== */
 details.thinking { color: var(--muted); font-size: 13px; }

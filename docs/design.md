@@ -184,7 +184,7 @@ def list_subagents(session_dir: Path) -> list[dict]
 
 原生 JS（ES2020），无构建、无外部依赖。hash 路由：`#/agent/<sid>`、`#/agent/<sid>/sub/<aid>`。
 
-- **左侧边栏**：搜索框（按 name/cwd/intent 过滤）；agent 按 cwd 分组，组内顺序沿用 API；每项显示名称、状态徽标（busy 绿色脉冲 / idle / done / unknown）、相对时间、置顶标记。每 `poll_interval_ms` 刷新列表。
+- **左侧边栏**：搜索框（按 name/cwd/intent/结果摘要 过滤）；agent 按 cwd 分组，组内顺序沿用 API；每项显示名称、结果摘要（`result`||`detail` 首行，截断；无则回退 intent、short_id）、状态徽标（busy 绿色脉冲 / idle / done / unknown）、相对时间、置顶标记。每 `poll_interval_ms` 刷新列表。
 - **主区域头部**：名称、cwd、intent、花费、状态。
 - **消息流**：仿聊天 App。user 气泡靠右，assistant 靠左；`meta` 消息淡化折叠。
   - text：简易 Markdown 渲染（先整体 HTML 转义，再处理代码块、行内代码、标题、粗体、列表、链接仅允许 http/https）。
@@ -259,6 +259,7 @@ def list_subagents(session_dir: Path) -> list[dict]
 导出 `renderMarkdown(source: string): string`，安全约束不变（先整体转义，只输出自己生成的标签）。支持：
 - 已有：标题、段落、粗体、行内代码、代码块、引用、分隔线、http/https 链接、有序/无序列表。
 - 新增：**GFM 表格**（含对齐 `:---:`，单元格内支持行内语法，`\|` 转义）；斜体 `*x*` / `_x_`（不误伤 `snake_case`）；删除线 `~~x~~`；任务列表 `- [ ]` / `- [x]`（禁用的 checkbox）；嵌套列表（按缩进）；裸 URL 自动链接；代码块语言标签 + “复制”按钮（按钮用 `data-copy` 标记，由 app.js 事件委托处理）；数学公式 `$$...$$`（块）与 `$...$`（行内）原样以等宽样式显示（不引入 KaTeX）。
+- 代码块与 Write 工具内容框：2–500 行时显示行号（每行一个 `span.ln-row`，CSS counter 生成，不进入 DOM 文本、不可选中，复制不含行号；单行或超 500 行不显示）。
 - 样式放 `static/markdown.css`。测试：`tests/js/markdown.test.mjs`，用 `node --test tests/js/*.mjs` 运行（node ≥18，无依赖）。
 
 ### 9.4 UI 改版

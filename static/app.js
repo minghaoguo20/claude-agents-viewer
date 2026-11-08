@@ -2,7 +2,7 @@
 // All transcript content is untrusted: it is only inserted via textContent
 // or through renderMarkdown(), whose output is the only trusted HTML string.
 
-import { renderMarkdown } from './markdown.js';
+import { renderMarkdown, numberCode } from './markdown.js';
 import { agentHash, parseAgentParams, siblingTarget, siblingJump, branchLabel, hitLeaf } from './branch.js';
 
 // ===== Utils =====
@@ -226,9 +226,14 @@ function goHome() {
 
 const UNKNOWN_DIR = '(未知目录)';
 
+/** Full result text of an agent list item: result first, then detail (same priority as the summary block). */
+function agentResultText(agent) {
+  return String(agent.result || agent.detail || '').trim();
+}
+
 function matchesFilter(agent, needle) {
   if (!needle) return true;
-  const haystack = [agent.name, agent.cwd, agent.intent, agent.short_id].join('\n').toLowerCase();
+  const haystack = [agent.name, agent.cwd, agent.intent, agent.short_id, agent.result, agent.detail].join('\n').toLowerCase();
   return haystack.includes(needle);
 }
 
@@ -247,18 +252,20 @@ function groupByCwd(agents) {
 }
 
 function renderAgentItem(agent) {
+  const full = agentResultText(agent);
+  const summary = clip(firstLine(full.trim()).trim(), 120) || agent.intent || agent.short_id;
   const active = state.view?.sid === agent.session_id && !state.view.aid;
   return h('a', {
     class: `agent-item${active ? ' active' : ''}`,
     href: agentHash(agent.session_id),
-    title: agent.detail || agent.intent || agent.name,
+    title: clip(full || agent.intent || agent.name || '', 400),
   },
   h('div', { class: 'agent-row' },
     agent.pinned ? h('span', { class: 'pin', title: '已置顶', text: '★' }) : null,
     h('span', { class: 'agent-name', text: agent.name }),
     statusBadge(agent.status)),
   h('div', { class: 'agent-sub' },
-    h('span', { class: 'agent-intent', text: agent.intent || agent.short_id }),
+    h('span', { class: 'agent-summary', text: summary }),
     h('span', { text: relativeTime(agent.updated_at) })));
 }
 
@@ -480,9 +487,18 @@ function renderSpecialInput(name, input) {
       ...input.edits.flatMap((edit, i) => [label(`修改 ${i + 1}`), renderDiff(edit.old_string, edit.new_string)])];
   }
   if (name === 'Write' && isString(input.content)) {
-    return [...fieldNodes(input, ['content']), label('内容'), h('pre', { class: 'code nowrap', text: input.content })];
+    return [...fieldNodes(input, ['content']), label('内容'), writeBox(input.content)];
   }
   return null;
+}
+
+// Write content box; line numbers (CSS counter, not selectable) for 2..500 lines.
+function writeBox(content) {
+  const n = numberCode(content);
+  if (!n) return h('pre', { class: 'code nowrap', text: content });
+  const pre = h('pre', { class: `code nowrap ln ln-${n.digits}` });
+  pre.innerHTML = n.html; // escaped by numberCode
+  return pre;
 }
 
 function renderInputFields(block) {

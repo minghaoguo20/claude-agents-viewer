@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderMarkdown as md } from '../../static/markdown.js';
+import { renderMarkdown as md, numberCode } from '../../static/markdown.js';
 
 const has = (html, part) => assert.ok(html.includes(part), `expected ${part} in ${html}`);
 const lacks = (html, part) => assert.ok(!html.includes(part), `unexpected ${part} in ${html}`);
@@ -43,7 +43,7 @@ test('tilde fence, no language, unclosed fence runs to end', () => {
   has(t, '<code>**x**</code>');
   lacks(t, 'md-lang');
   const u = md('```js\nconst a = 1;\n\n# not heading');
-  has(u, '# not heading</code>');
+  has(u, '# not heading</span></code>');
   lacks(u, '<h1>');
 });
 
@@ -186,4 +186,44 @@ test('realistic Chinese answer with table', () => {
   has(html, '<li class="task"><input type="checkbox" disabled checked> 完成渲染</li>');
   has(html, '嵌套项</li></ul></li>');
   has(html, '<span class="md-lang">bash</span>');
+});
+
+const textOf = (html) => html.replace(/<[^>]*>/g, '')
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+const codeOf = (html) => textOf(html.match(/<code>([\s\S]*?)<\/code>/)[1]);
+
+test('multi-line fence gets numbered rows and keeps text', () => {
+  const html = md('```js\na\n\nc & <b>\n```');
+  has(html, '<pre class="code ln ln-2"><code><span class="ln-row">a\n</span>');
+  assert.equal((html.match(/class="ln-row"/g) || []).length, 3);
+  assert.equal(codeOf(html), 'a\n\nc & <b>');
+});
+
+test('single-line fence stays plain', () => {
+  has(md('```\none\n```'), '<pre class="code"><code>one</code></pre>');
+  assert.equal(numberCode('one'), null);
+  assert.equal(numberCode('one\n'), null);
+});
+
+test('over 500 lines is unnumbered, 500 is numbered with 3 digits', () => {
+  const mk = (n) => Array.from({ length: n }, (_, i) => `l${i}`).join('\n');
+  has(md('```\n' + mk(501) + '\n```'), '<pre class="code"><code>l0\n');
+  assert.equal(numberCode(mk(501)), null);
+  assert.equal(numberCode(mk(500)).digits, 3);
+  assert.equal(numberCode(mk(500)).lines, 500);
+});
+
+test('trailing newline ignored for counting but preserved in text', () => {
+  const n = numberCode('a\nb\n');
+  assert.equal(n.lines, 2);
+  assert.equal(textOf(n.html), 'a\nb\n');
+  assert.equal(textOf(numberCode('a\nb').html), 'a\nb');
+  assert.equal(numberCode('a\n\n').lines, 2);
+});
+
+test('numbered code escapes hostile content', () => {
+  const n = numberCode('<script>alert(1)</script>\nx & y');
+  lacks(n.html, '<script>');
+  has(n.html, '&lt;script&gt;');
+  has(n.html, 'x &amp; y');
 });
