@@ -214,6 +214,13 @@ function onRoute() {
   renderSidebar();
 }
 
+/** Leave the current view and show the blank home state; the URL is cleaned without a trailing "#". */
+function goHome() {
+  document.body.classList.remove('sidebar-open');
+  if (location.hash) history.pushState(null, '', location.pathname + location.search);
+  onRoute();
+}
+
 // ===== Sidebar =====
 
 const UNKNOWN_DIR = '(未知目录)';
@@ -315,6 +322,7 @@ function initSidebar() {
     const q = search.value.trim();
     if (q) location.hash = `#/search${query({ q })}`;
   });
+  $('#home-btn').addEventListener('click', goHome);
   const toggle = () => document.body.classList.toggle('sidebar-open');
   $('#menu-btn').addEventListener('click', toggle);
   $('#backdrop').addEventListener('click', toggle);
@@ -1214,10 +1222,18 @@ function initNavigator() {
   document.addEventListener('keydown', onNavigatorKey);
 }
 
-/** "[" / "]" step through questions; Escape closes the drawer. Ignored while typing. */
+/** "[" / "]" step through questions; Escape closes a drawer first, otherwise goes home. Ignored while typing. */
 function onNavigatorKey(event) {
   if (event.key === 'Escape') {
-    setPromptsOpen(false);
+    const sidebarOpen = document.body.classList.contains('sidebar-open');
+    if (isPromptsOpen() || sidebarOpen) {
+      setPromptsOpen(false);
+      document.body.classList.remove('sidebar-open');
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return;
+    if (event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+    goHome();
     return;
   }
   if (event.ctrlKey || event.metaKey || event.altKey || (event.key !== '[' && event.key !== ']')) return;
