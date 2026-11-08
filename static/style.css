@@ -211,6 +211,12 @@ button { font: inherit; color: inherit; }
 .head-title .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .head-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 2px; font-size: 12px; color: var(--muted); }
 .head-meta .mono { font-family: var(--mono); }
+.cwd-group { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex-wrap: wrap; }
+.copy-btn { display: inline-flex; align-items: center; justify-content: center; padding: 2px; background: none; border: 0; border-radius: 4px; color: var(--muted); cursor: pointer; }
+.copy-btn:hover { color: var(--text); }
+.copy-btn .icon { width: 14px; height: 14px; }
+.cwd-feedback:empty { display: none; }
+.manual-copy { min-width: 16em; max-width: 100%; padding: 2px 6px; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--accent); border-radius: 4px; }
 .back { display: inline-block; margin-bottom: 2px; font-size: 13px; text-decoration: none; }
 
 .head-summary { margin-top: 4px; font-size: 13px; color: var(--muted); font-weight: 400; }
@@ -263,6 +269,7 @@ details.timeline > summary { padding: 6px 16px; cursor: pointer; color: var(--mu
   box-shadow: 0 2px 6px rgba(20, 30, 50, 0.2);
   cursor: pointer;
 }
+.fab-list { display: none; }
 .fab:disabled { opacity: 0.4; cursor: default; }
 .fab .icon { width: 20px; height: 20px; }
 .stream { max-width: 900px; margin: 0 auto; }
@@ -460,7 +467,7 @@ body.prompts-open #prompts-panel { transform: none; visibility: visible; }
 #backdrop { display: none; }
 
 @media (max-width: 767px), (pointer: coarse) {
-  #menu-btn, #prompts-btn, .more-btn { min-width: 40px; min-height: 40px; }
+  #menu-btn, #prompts-btn, .more-btn, .copy-btn { min-width: 40px; min-height: 40px; }
   .agent-item { padding-top: 10px; padding-bottom: 10px; }
   .group-head { min-height: 44px; }
   details.tool-card > summary, details.sys-row > summary, details.timeline > summary, details.thinking > summary { min-height: 40px; }
@@ -471,6 +478,9 @@ body.prompts-open #prompts-panel { transform: none; visibility: visible; }
 
 @media (max-width: 767px) {
   #menu-btn { display: block; }
+  .fab-list { display: flex; }
+  /* Keep header buttons on the title row when the meta block expands */
+  #menu-btn, #prompts-btn { align-self: flex-start; margin-top: 0; }
   #sidebar {
     position: fixed;
     inset: 0 auto 0 0;

@@ -30,6 +30,8 @@ const ICON_PATHS = {
   up: 'M6 15l6-6 6 6',
   down: 'M6 9l6 6 6-6',
   bottom: 'M6 5l6 6 6-6M6 13l6 6 6-6',
+  copy: 'M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1zM5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1',
+  list: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',
 };
 
 /** Inline SVG icon built through the DOM API (stroke follows currentColor). */
@@ -323,9 +325,8 @@ function initSidebar() {
     if (q) location.hash = `#/search${query({ q })}`;
   });
   $('#home-btn').addEventListener('click', goHome);
-  const toggle = () => document.body.classList.toggle('sidebar-open');
-  $('#menu-btn').addEventListener('click', toggle);
-  $('#backdrop').addEventListener('click', toggle);
+  $('#menu-btn').addEventListener('click', toggleSidebar);
+  $('#backdrop').addEventListener('click', toggleSidebar);
 }
 
 // ===== Markdown code copy =====
@@ -341,17 +342,37 @@ async function copyText(text) {
 
 /** Fallback for insecure contexts where navigator.clipboard is unavailable. */
 function legacyCopy(text) {
-  const area = h('textarea', { readonly: true, style: 'position:fixed;opacity:0;top:0;left:0' });
+  // 16px font avoids iOS zoom; the element must be rendered (not display:none) to be selectable.
+  const area = h('textarea', {
+    readonly: true, 'aria-hidden': 'true', tabindex: '-1',
+    style: 'position:fixed;opacity:0;top:0;left:0;width:1px;height:1px;font-size:16px',
+  });
   area.value = text;
+  const active = document.activeElement;
   document.body.append(area);
-  area.select();
   try {
+    area.focus({ preventScroll: true });
+    area.select();
+    area.setSelectionRange(0, text.length); // iOS ignores select() on readonly fields
     return document.execCommand('copy');
   } catch {
     return false;
   } finally {
     area.remove();
+    active?.focus?.({ preventScroll: true });
   }
+}
+
+/** Last resort: show the text in a pre-selected input so the user can copy it by hand. */
+function showManualCopy(text, anchor) {
+  anchor.parentElement?.querySelector('.manual-copy')?.remove();
+  const input = h('input', {
+    class: 'manual-copy mono', type: 'text', readonly: true, value: text,
+    'aria-label': '手动复制路径', onblur: (event) => event.currentTarget.remove(),
+  });
+  anchor.after(input);
+  input.focus();
+  input.select();
 }
 
 /** Show `text` on the button briefly, then restore its original label. */
@@ -723,6 +744,11 @@ function closeView() {
   state.view = null;
 }
 
+/** Open/close the mobile sidebar drawer (shared by the topbar menu, backdrop and list fab). */
+function toggleSidebar() {
+  document.body.classList.toggle('sidebar-open');
+}
+
 function fabButton(title, iconName, onclick) {
   return h('button', { class: 'fab', type: 'button', title, 'aria-label': title, onclick }, icon(iconName));
 }
@@ -736,6 +762,9 @@ function buildFabs(view) {
     view.els.next = fabButton('下一个问题（]）', 'down', () => stepPrompt(view, 1));
     nodes.unshift(view.els.prev, view.els.next);
   }
+  // Mobile-only (hidden by CSS on desktop); last so it sits nearest the thumb
+  nodes.push(fabButton('打开 agent 列表', 'list', toggleSidebar));
+  nodes[nodes.length - 1].classList.add('fab-list');
   return h('div', { class: 'fabs' }, nodes);
 }
 
@@ -773,6 +802,20 @@ function renderSubagentHeader(view, name) {
   ];
 }
 
+/** Working directory text plus a one-click copy button (works on plain http via legacyCopy). */
+function renderCwd(cwd) {
+  const feedback = h('span', { class: 'cwd-feedback', 'aria-live': 'polite' });
+  const button = h('button', {
+    class: 'copy-btn', type: 'button', title: '复制路径', 'aria-label': '复制路径',
+    onclick: async () => {
+      if (await copyText(cwd)) flashLabel(feedback, '已复制');
+      else { flashLabel(feedback, '复制失败'); showManualCopy(cwd, button); }
+    },
+  }, icon('copy'));
+  return h('span', { class: 'cwd-group' },
+    h('span', { class: 'mono', title: cwd, text: cwd }), button, feedback);
+}
+
 function renderHeader(view) {
   const box = $('#header-content');
   const detail = view.detail;
@@ -786,7 +829,7 @@ function renderHeader(view) {
     return;
   }
   const metaItems = [
-    detail.cwd ? h('span', { class: 'mono', title: detail.cwd, text: detail.cwd }) : null,
+    detail.cwd ? renderCwd(detail.cwd) : null,
     detail.intent ? h('span', { text: detail.intent }) : null,
     detail.title && detail.title !== name ? h('span', { text: detail.title }) : null,
     detail.cost_usd != null ? h('span', { text: formatCost(detail.cost_usd) }) : null,
