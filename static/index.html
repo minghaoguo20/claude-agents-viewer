@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Claude Agents Viewer</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/markdown.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar" aria-label="Agent 列表">
+      <div class="sidebar-head">
+        <h1>Agents</h1>
+        <input id="search" type="search" placeholder="过滤 / 回车全文搜索" autocomplete="off" enterkeyhint="search" aria-label="过滤 agent，回车全文搜索">
+      </div>
+      <nav id="agent-list"></nav>
+      <div class="sidebar-foot"><a id="stats-link" href="#/stats">花费统计</a></div>
+    </aside>
+    <div id="backdrop"></div>
+    <main id="main">
+      <header id="topbar">
+        <button id="menu-btn" type="button" aria-label="展开或收起 agent 列表">&#9776;</button>
+        <div id="header-content"></div>
+        <button id="prompts-btn" type="button" hidden aria-expanded="false" aria-controls="prompts-panel">问题<span id="prompts-count"></span></button>
+      </header>
+      <div id="view"></div>
+    </main>
+  </div>
+  <div id="prompts-backdrop"></div>
+  <aside id="prompts-panel" aria-label="问题目录">
+    <div class="prompts-head">
+      <strong id="prompts-title">问题目录</strong>
+      <button id="prompts-close" type="button" aria-label="关闭问题目录">&times;</button>
+    </div>
+    <div id="prompts-list"></div>
+  </aside>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

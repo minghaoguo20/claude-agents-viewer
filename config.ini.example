@@ -1,0 +1,18 @@
+# Copy to config.ini for local changes (config.ini is git-ignored).
+# Without config.ini, the viewer falls back to this file.
+
+[server]
+# Only loopback hosts are allowed: 127.0.0.1, localhost, ::1
+host = 127.0.0.1
+port = 8765
+
+[claude]
+home = ~/.claude
+
+[viewer]
+# Messages per page when lazy loading
+page_size = 50
+# Long blocks are truncated to this many characters until expanded
+max_block_chars = 4000
+# Refresh interval for live agents
+poll_interval_ms = 3000

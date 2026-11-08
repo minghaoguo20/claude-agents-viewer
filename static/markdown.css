@@ -1,0 +1,44 @@
+/* Styles for everything static/markdown.js emits. Uses theme variables from style.css. */
+
+/* Tables: scroll horizontally inside the bubble */
+.md .md-table { margin: 0 0 8px; max-width: 100%; overflow-x: auto; }
+.md .md-table table { border-collapse: collapse; font-size: 0.95em; }
+.md .md-table th, .md .md-table td { padding: 5px 10px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+.md .md-table th { background: var(--surface-2); font-weight: 600; white-space: nowrap; }
+.md .md-table tbody tr:nth-child(even) { background: var(--surface-2); }
+.md .md-table .md-al-center { text-align: center; }
+.md .md-table .md-al-right { text-align: right; }
+.md .md-table .md-al-left { text-align: left; }
+
+/* Inline emphasis */
+.md em { font-style: italic; }
+.md del { color: var(--muted); text-decoration: line-through; }
+.md a { color: var(--accent); word-break: break-all; }
+
+/* Lists */
+.md ul ul, .md ul ol, .md ol ul, .md ol ol { margin: 2px 0; }
+.md li { margin: 2px 0; }
+.md li.task { list-style: none; margin-left: -1.3em; }
+.md li.task > input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: middle; accent-color: var(--accent); }
+
+/* Code block with header (language label + copy button) */
+.md .md-code { margin: 0 0 8px; border-radius: 8px; background: var(--code-bg); overflow: hidden; }
+.md .md-code-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 3px 6px 3px 11px; border-bottom: 1px solid var(--border);
+  font-size: 11.5px; color: var(--muted);
+}
+.md .md-code-head:has(.md-lang) { justify-content: space-between; }
+.md .md-code-head:not(:has(.md-lang)) { justify-content: flex-end; }
+.md .md-lang { font-family: var(--mono); text-transform: lowercase; }
+.md .md-copy {
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--surface); color: var(--muted); font: inherit; cursor: pointer;
+}
+.md .md-copy:hover { color: var(--text); border-color: var(--accent); }
+.md .md-code pre.code { margin: 0; border-radius: 0; }
+
+/* Math, shown verbatim in monospace */
+.md .md-math { font-family: var(--mono); background: var(--surface-2); color: var(--text); }
+.md span.md-math { padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+.md div.md-math { margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; white-space: pre-wrap; overflow-x: auto; }
