@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .files import read_json
+from .questions import sanitize_questions
 
 CWD_PREFIX_BYTES = 64 * 1024
 SESSION_ID_RE = re.compile(r"^[0-9a-f-]{8,36}$")
@@ -31,6 +32,9 @@ class AgentInfo:
     tempo: str | None = None
     result: str | None = None
     tokens: int | None = None
+    pid: int | None = None  # OS pid of the live session, None once it has exited
+    session: dict[str, Any] | None = None  # sessions/<pid>.json excerpt, None when no file exists
+    questions: list[dict[str, Any]] = field(default_factory=list)  # pending questions, blocked only
 
     def to_dict(self) -> dict[str, Any]:
         data = {k: v for k, v in self.__dict__.items() if k != "transcript"}
@@ -61,6 +65,18 @@ def read_live_sessions(home: Path) -> dict[str, dict[str, Any]]:
             data["_alive"] = isinstance(data.get("pid"), int) and pid_alive(data["pid"])
             live[data["sessionId"]] = data
     return live
+
+
+SESSION_INFO_KEYS = ("pid", "sessionId", "cwd", "startedAt", "kind", "status", "entrypoint", "version")
+
+
+def session_info(data: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Whitelisted fields of a sessions/<pid>.json file (sockets, domains and the like stay private)."""
+    if not data:
+        return None
+    info = {k: data[k] for k in SESSION_INFO_KEYS if isinstance(data.get(k), (str, int)) and not isinstance(data.get(k), bool)}
+    info["alive"] = bool(data.get("_alive"))
+    return info
 
 
 def read_pins(home: Path) -> set[str]:
@@ -148,7 +164,9 @@ def build_agent(home: Path, job_id: str, job: dict[str, Any],
         updated_at=int(max(stamps)) if stamps else None,
         pinned=sid in pins or short in pins or job_id in pins, transcript=transcript,
         job_id=job_id, tempo=_opt_str(job.get("tempo")), result=_job_result(job),
-        tokens=_job_tokens(job),
+        tokens=_job_tokens(job), pid=alive_data.get("pid") if alive else None,
+        session=session_info(live),
+        questions=sanitize_questions(job) if status == "blocked" else [],
     )
 
 

@@ -1,6 +1,6 @@
 [English](README.md) | 中文
 
-# Claude Agents Viewer
+# Claude Agents Viewer（页面显示名：CC-Viewer）
 
 一个本地网页，用来浏览 Claude Code 后台 agent（`claude agents` 中可见的那些）的 session 对话历史。严格只读、零依赖：仅使用 Python 标准库和原生 JS。
 
@@ -11,7 +11,9 @@
 - 向上滚动懒加载更早消息，运行中的 agent 实时刷新
 - 回溯分支：用 ‹ 2/3 › 控件在同一问题的不同分支间切换
 - 问题导航，用 `[` / `]` 在你的提问之间跳转
+- 待处理（blocked）的 agent 置顶高亮、标题栏计数、可选浏览器通知，并只读展示其待回答的问题
 - 任务进度时间线（working、done 等状态变化与结果摘要）
+- 对话末尾“后台任务”块（Bash 后台命令 / Monitor 的状态与退出码）
 - 跨所有 agent 的全文搜索，点击结果定位到对应消息
 - 按 agent、按模型统计花费与 token 用量
 - 支持移动端浏览

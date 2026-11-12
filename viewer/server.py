@@ -62,19 +62,22 @@ def clamp_limit(value: int | None, default: int, maximum: int) -> int:
 class Handler(BaseHTTPRequestHandler):
     server: "ViewerServer"
     server_version = "ClaudeAgentsViewer"
+    protocol_version = "HTTP/1.1"  # keep-alive; every response must carry Content-Length
+    disable_nagle_algorithm = True  # headers and body are separate writes; avoid 40ms delayed-ACK stalls
+    timeout = 30  # close idle keep-alive sockets (one thread per connection)
 
     # ---- plumbing ----
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         log.debug("%s - %s", self.address_string(), format % args)
 
     def send_body(self, status: int, body: bytes, ctype: str,
-                  extra: dict[str, str] | None = None) -> None:
+                  extra: dict[str, str] | None = None, cache: str = "no-store") -> None:
         self.send_response(status)
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         if self.command != "HEAD":
@@ -136,7 +139,18 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype.endswith("javascript"):
             ctype += "; charset=utf-8"
-        self.send_body(200, target.read_bytes(), ctype)
+        stat = target.stat()
+        etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+        if self.headers.get("If-None-Match") == etag:
+            # 304 carries no body; Content-Length: 0 keeps the connection reusable.
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", "0")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            return
+        self.send_body(200, target.read_bytes(), ctype, {"ETag": etag}, cache="no-cache")
 
     def agent_route(self, sid: str, rest: str, query: dict[str, list[str]]) -> None:
         agent = self.require_agent(sid)
@@ -148,6 +162,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.prompts(agent, query)
         if rest == "/timeline":
             return self.timeline(agent, query)
+        if rest == "/tasks":
+            if agent.transcript is None:
+                raise HttpError(404, "no transcript")
+            return self.send_json({"tasks": self.server.cache.get(agent.transcript).tasks()})
         if rest == "/subagents":
             return self.send_json({"subagents": list_subagents(self.session_dir(agent))})
         block = BLOCK_RE.match(rest)

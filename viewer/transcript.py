@@ -10,6 +10,7 @@ from typing import Any
 
 from .branches import BranchIndex, Node
 from .files import read_json
+from .tasks import derive_tasks, remember
 
 PERSISTED_RE = re.compile(r"tool-results/([\w.-]+)")
 NAME_RE = re.compile(r"^[\w.-]+$")
@@ -112,6 +113,7 @@ class Transcript:
         self.title: str | None = None
         self.cost_usd: float | None = None
         self.cost_state: dict[str, Any] | None = None
+        self.task_notes: dict[str, dict[str, Any]] = {}  # task-notification records, bounded
         self._messages: list[dict[str, Any]] = []
         self._msg_ids: list[str | None] = []  # message.id per normalized message
         self._nodes: dict[str, Node] = {}  # every record with a uuid, file order
@@ -123,6 +125,10 @@ class Transcript:
     def parsed_bytes(self) -> int:
         """File bytes consumed so far; the cheap basis of the memory estimate."""
         return self._offset
+
+    def tasks(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return derive_tasks(self._messages, self.task_notes)
 
     @property
     def messages(self) -> list[dict[str, Any]]:
@@ -137,6 +143,7 @@ class Transcript:
 
     def _reset(self) -> None:
         self.title = self.cost_usd = self.cost_state = None
+        self.task_notes = {}
         self._messages, self._msg_ids, self._offset = [], [], 0
         self._nodes, self._index = {}, None
 
@@ -169,6 +176,8 @@ class Transcript:
             title = rec.get("aiTitle" if kind == "ai-title" else "customTitle")
             if isinstance(title, str) and title:
                 self.title = title
+        elif kind == "queue-operation":
+            remember(self.task_notes, rec, rec.get("content"))
         elif kind == "cost-state":
             cost = rec.get("totalCostUSD")
             if isinstance(cost, (int, float)):

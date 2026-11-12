@@ -1,6 +1,6 @@
 English | [中文](README-zh.md)
 
-# Claude Agents Viewer
+# Claude Agents Viewer (page display name: CC-Viewer)
 
 A local web page for browsing the session transcripts of Claude Code background agents (the ones listed by `claude agents`). It is strictly read-only and has zero dependencies: just the Python standard library and vanilla JS.
 
@@ -11,7 +11,9 @@ A local web page for browsing the session transcripts of Claude Code background 
 - Lazy loading of older messages and live updates for running agents
 - Rewind branches: switch between alternatives with a ‹ 2/3 › control
 - Question navigator, with `[` / `]` to jump between your questions
+- Blocked agents are highlighted (sorted first, tab title count, optional browser notification) and show their pending questions read-only
 - Job progress timeline (working, done, ... plus the result summary)
+- Background tasks block (Bash `run_in_background` / Monitor) below the result summary
 - Full-text search across all agents, with jump-to-message
 - Cost and token statistics per agent and per model
 - Mobile-friendly

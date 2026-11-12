@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f6f8">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14171d">
-  <title>Claude Agents Viewer</title>
+  <title>CC-Viewer</title>
+  <meta name="apple-mobile-web-app-title" content="CC-Viewer">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/markdown.css">
 </head>
@@ -13,11 +16,11 @@
   <div id="app">
     <aside id="sidebar" aria-label="Agent 列表">
       <div class="sidebar-head">
-        <h1><button id="home-btn" type="button" aria-label="回到首页">Agents</button></h1>
+        <h1><button id="home-btn" type="button" aria-label="回到首页">CC-Viewer</button></h1>
         <input id="search" type="search" placeholder="过滤 / 回车全文搜索" autocomplete="off" enterkeyhint="search" aria-label="过滤 agent，回车全文搜索">
       </div>
       <nav id="agent-list"></nav>
-      <div class="sidebar-foot"><a id="stats-link" href="#/stats">花费统计</a></div>
+      <div class="sidebar-foot"><a id="stats-link" href="#/stats">花费统计</a><button id="notify-btn" type="button" hidden aria-pressed="false">通知</button></div>
     </aside>
     <div id="backdrop"></div>
     <main id="main">

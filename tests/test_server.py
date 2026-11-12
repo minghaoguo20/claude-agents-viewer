@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -58,6 +59,45 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
 
+    def test_static_validators(self) -> None:
+        code, headers, body = self.request("/static/app.js")
+        self.assertEqual((code, body), (200, b"var a=1;"))
+        self.assertEqual(headers["Cache-Control"], "no-cache")
+        etag = headers["ETag"]
+        for path in ("/static/app.js", "/"):
+            _, h, _ = self.request(path)
+            self.assertEqual(h["Cache-Control"], "no-cache")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/static/app.js", headers={"If-None-Match": etag})
+        resp = conn.getresponse()
+        self.assertEqual((resp.status, resp.read()), (304, b""))
+        self.assertEqual(resp.getheader("ETag"), etag)
+        self.assertEqual(resp.getheader("Cache-Control"), "no-cache")
+        conn.request("GET", "/static/app.js", headers={"If-None-Match": '"nope"'})  # same connection
+        resp = conn.getresponse()
+        self.assertEqual((resp.status, resp.read()), (200, b"var a=1;"))
+        conn.close()
+
+    def test_keep_alive(self) -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        for path, status in (("/api/config", 200), ("/api/nope", 404), ("/api/agents", 200),
+                             ("/static/../secret.txt", 404), ("/static/app.js", 200)):
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, status)
+            self.assertEqual(resp.version, 11)
+        conn.request("HEAD", "/api/config")
+        resp = conn.getresponse()
+        self.assertEqual(resp.read(), b"")
+        conn.request("POST", "/api/config")
+        resp = conn.getresponse()
+        self.assertEqual((resp.status, resp.getheader("Allow")), (405, "GET, HEAD"))
+        resp.read()
+        conn.request("GET", "/api/config")
+        self.assertEqual(conn.getresponse().status, 200)
+        conn.close()
+
     def test_agents_list(self) -> None:
         agents = self.get_json("/api/agents")["agents"]
         self.assertEqual(len(agents), 3)
@@ -70,6 +110,15 @@ class ServerTest(unittest.TestCase):
         first = next(a for a in json.loads(body)["agents"] if a["session_id"] == fx.SID_A)
         self.assertEqual((first["job_id"], first["result"], first["tokens"]),
                          ("aaaaaaaa", "all done", 4242))
+        self.assertEqual(first["pid"], os.getpid())  # live session exposes its pid
+        dead = next(a for a in json.loads(body)["agents"] if a["session_id"] == fx.SID_C)
+        self.assertIsNone(dead["pid"])  # dead pid is hidden
+        info = first["session"]
+        self.assertEqual((info["pid"], info["sessionId"], info["cwd"], info["kind"], info["status"], info["alive"]),
+                         (os.getpid(), fx.SID_A, "/work/a", "bg", "busy", True))
+        self.assertEqual(set(info) - {"entrypoint", "version"},
+                         {"pid", "sessionId", "cwd", "startedAt", "kind", "status", "alive"})
+        self.assertFalse(dead["session"]["alive"])
 
     def test_prompts(self) -> None:
         prompts = self.get_json(f"/api/agents/{fx.SID_B}/prompts")["prompts"]

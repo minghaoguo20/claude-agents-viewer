@@ -1,4 +1,4 @@
-# Claude Agents Viewer 设计文档
+# Claude Agents Viewer 设计文档（页面显示名 CC-Viewer）
 
 本地只读网页，用于浏览 `claude agents` 中可见的 session 历史。纯 Python 3.10 标准库 + 原生 HTML/JS/CSS，无第三方依赖、无 CDN。
 
@@ -106,6 +106,7 @@ class AgentInfo:
     updated_at: int | None   # epoch ms; max(live updatedAt, transcript mtime)
     pinned: bool
     transcript: Path | None
+    questions: list          # sanitized pending questions; only when status == "blocked" (see questions.py)
     def to_dict(self) -> dict   # JSON-safe; replaces transcript with has_transcript: bool
 
 def list_agents(claude_home: Path) -> list[AgentInfo]   # pinned first, then updated_at desc
@@ -301,3 +302,31 @@ Claude Code 的 transcript 是树（每条记录有 `uuid` / `parentUuid`）。�
 - 轮询：未固定分支时，以 `after=<maxIdx-1>` 拉取；若响应中已不含当前最后一条消息，说明发生了回溯，丢弃 `at` 并重载最新路径。已固定的分支不会自动解除固定。
 - 问题目录：带 `branch` 的问题在行下显示“分支 2/3”开关（`aria-expanded`），展开后列出所有版本的预览（当前版本高亮），点击其他版本与消息级切换器同样改 hash（`at=<兄弟 idx>&b=<兄弟 leaf>`，等于默认叶则省略 `b`，用 `siblingJump`）。展开状态保存在 view 内，`[` `]` 仍只在当前路径的问题间移动。
 - 搜索：`on_default_path === false` 的命中带 `b=<hit.leaf>` 跳转，并显示“已回退的分支”标记。
+
+## 11. 待处理（blocked）提示
+
+只读：不提供任何回答入口，提示用户“在终端中回答”。
+
+- 后端：`viewer/questions.py::sanitize_questions` 从 `state.json` 的 `block.questions` 白名单提取 `{header?, question, multiSelect?, options:[{label, description?}]}`（限制条数与长度，异常结构返回 `[]`，不暴露其他字段）。`AgentInfo.questions` 仅在 `status == "blocked"` 时非空，随 `/api/agents` 与 `/api/agents/<sid>` 返回。
+- 前端纯逻辑在 `static/attention.js`（标题、blocked 置顶、状态跃迁检测、通知文案，带 `tests/js/attention.test.mjs`）。
+- 标题：N 个 blocked 时 `(N) 待处理 · <原标题>`，归零恢复。
+- 侧边栏：blocked 的组与组内 agent 稳定置顶，行带高亮左边框与加强的徽标（沿用 `--warn`）。
+- 问题卡片：agent 视图末尾、结果摘要之上，宽度 `--col-width`，条件与结果摘要相同（主视图、默认路径、已到末尾）。
+- 浏览器通知：侧边栏底部“通知”按钮（不支持 `Notification` 的浏览器隐藏）由用户点击申请权限，偏好存 `localStorage`（`cav.notify`）。仅在两次轮询之间由非 blocked 变为 blocked 时通知（首次加载不通知），同一 `session|首个问题` 只通知一次；点击通知聚焦窗口并跳转 `#/agent/<sid>`。
+
+## 12. 后台任务块
+
+只读；展示会话里由 Bash（`run_in_background`）与 Monitor 启动的后台任务，位于“结果摘要”之下，显示条件与其相同（主视图、默认路径、已到末尾）。
+
+- 后端 `viewer/tasks.py`，接口 `GET /api/agents/<sid>/tasks` → `{"tasks": [{id, kind: "shell"|"monitor", tool_use_id, description, status, exit_code?, at?}]}`（无 transcript 404；最多 200 条，按启动顺序）。字段严格白名单，`description` 取 input.description（缺省为 command 首行）折叠空白并截断到 200 字符；绝不读取任务输出文件（位于 `/tmp`，在读取范围之外）；坏结构一律跳过。
+- 来源：tool_use（Bash 且 `run_in_background` 为 true / Monitor）；其 tool_result 文本中的 `Command running in background with ID: <id>` / `Monitor started (task <id>` 给出 `id`（缺失则用 tool_use id）；`TaskStop`（`task_id`）/ `KillShell`（`shell_id`）标记停止；完成通知取自 `queue-operation` 记录的 `<task-notification>`（`Transcript` 在摄取时只保留解析后的 task-id / tool-use-id / status / summary，按 id 去重、上限 1000 条，内存有界），也兼容以 `task-notification` 用户消息出现的同样文本。
+- 状态推导（无心跳，故不猜测“运行中”）：有通知 → `status` 为 killed/stopped 则 `stopped`；failed 或 summary 中 `exit code` 非 0 则 `failed`；completed 则 `done`（`exit_code` 取自 summary）；无通知但有 TaskStop → `stopped`；其余 → `unknown`（前端显示“状态未知”，与 `running` 同为警示色）。`running` 为协议保留值，后端目前不产生。
+- 前端：纯逻辑在 `static/tasks.js`（状态文案、未完成优先排序，带 `tests/js/tasks.test.mjs`）。卡片默认折叠（`<details>`，展开状态存于视图、轮询重绘不丢），摘要行“后台任务 · N · M 未结束”（M 为运行中/状态未知数，为 0 时省略），展开后每行 类型标签 + 描述 + 状态标签（warn/ok/err 色）；点击滚动到对应工具卡片并高亮（卡片不在已加载窗口内则无动作）。无任务时整块隐藏；随轮询刷新（仅主视图），内容未变不重绘，失败保留旧列表。
+
+## 13. 切换性能（网络访问）
+
+纯性能优化，无行为变化。
+
+- HTTP/1.1 keep-alive：`Handler.protocol_version = "HTTP/1.1"`，所有响应（含错误、HEAD、304）都带准确的 `Content-Length`；`timeout = 30` 秒，空闲连接会被关闭，避免“每连接一线程”堆积。
+- `openView` 首次加载：详情、子代理、首页消息三个请求并行（消息页参数只取决于 `view.at` / `page_size` / `view.pinned`，不依赖详情）；渲染顺序与过期视图守卫不变。
+- 静态文件（`/` 与 `/static/*`）：`ETag`（mtime_ns + 大小）+ `Cache-Control: no-cache`，命中 `If-None-Match` 返回无正文的 304；修改文件后下次请求立即生效。`/api/*` 仍为 `no-store`。

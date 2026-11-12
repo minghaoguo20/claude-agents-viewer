@@ -108,7 +108,11 @@ def make_claude_home(root: Path) -> Path:
                 "output": {"result": "all done"}, "providerEnv": {"TOKEN": SECRET_ENV},
                 "sessionPermissionRules": [SECRET_ENV]})
     write_json(home / "jobs" / "cccccccc" / "state.json",
-               {"state": "blocked", "sessionId": SID_C, "cwd": "/job/c", "output": None})
+               {"state": "blocked", "sessionId": SID_C, "cwd": "/job/c", "output": None,
+                "block": {"questions": [{"question": "Pick one?", "header": "Mode", "multiSelect": False,
+                                         "options": [{"label": "A", "description": "first", "x": SECRET_ENV}, {"label": "B"}],
+                                         "secret": SECRET_ENV}],
+                          "providerEnv": SECRET_ENV}})
     write_json(home / "jobs" / "bbbbbbbb" / "state.json",
                {"state": "done", "name": "Job B", "sessionId": SID_B})
     (home / "jobs" / "dddddddd").mkdir(parents=True)

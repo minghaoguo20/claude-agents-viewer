@@ -1,8 +1,10 @@
-// Claude Agents Viewer frontend: read-only chat-style transcript browser.
+// CC-Viewer (Claude Agents Viewer) frontend: read-only chat-style transcript browser.
 // All transcript content is untrusted: it is only inserted via textContent
 // or through renderMarkdown(), whose output is the only trusted HTML string.
 
 import { renderMarkdown, numberCode } from './markdown.js';
+import { pageTitle, blockedFirst, isBlocked, blockKey, newlyBlocked, notificationText } from './attention.js';
+import { KIND_LABELS, sortTasks, statusLabel, tasksSummary } from './tasks.js';
 import { agentHash, parseAgentParams, siblingTarget, siblingJump, branchLabel, hitLeaf } from './branch.js';
 
 // ===== Utils =====
@@ -32,6 +34,9 @@ const ICON_PATHS = {
   down: 'M6 9l6 6 6-6',
   bottom: 'M6 5l6 6 6-6M6 13l6 6 6-6',
   copy: 'M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1zM5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1',
+  check: 'M5 12l5 5 9-10',
+  close: 'M6 6l12 12M18 6L6 18',
+  info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 8h.01',
   clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 2',
   list: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',
 };
@@ -172,6 +177,8 @@ const state = {
   collapsed: loadCollapsed(), // cwd keys of collapsed sidebar groups
   view: null, // the active view (conversation, search or stats), or null
   viewSeq: 0,
+  blockedIds: null, // session ids blocked at the previous poll; null before the first load
+  notified: new Set(), // block keys already notified
 };
 
 /** True while `view` is still the one on screen; async code must check this after every await. */
@@ -237,7 +244,7 @@ function matchesFilter(agent, needle) {
   return haystack.includes(needle);
 }
 
-/** Group agents by cwd: groups with pinned agents first, then by latest update; members keep API order. */
+/** Group agents by cwd: groups with blocked agents first, then pinned ones, then by latest update; members keep API order. */
 function groupByCwd(agents) {
   const groups = new Map();
   for (const agent of agents) {
@@ -248,7 +255,12 @@ function groupByCwd(agents) {
     group.latest = Math.max(group.latest, agent.updated_at || 0);
     group.pinned = group.pinned || Boolean(agent.pinned);
   }
-  return [...groups.values()].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.latest - a.latest);
+  for (const group of groups.values()) {
+    group.agents = blockedFirst(group.agents);
+    group.blocked = group.agents.some(isBlocked);
+  }
+  return [...groups.values()].sort((a, b) =>
+    Number(b.blocked) - Number(a.blocked) || Number(b.pinned) - Number(a.pinned) || b.latest - a.latest);
 }
 
 function renderAgentItem(agent) {
@@ -256,7 +268,7 @@ function renderAgentItem(agent) {
   const summary = clip(firstLine(full.trim()).trim(), 120) || agent.intent || agent.short_id;
   const active = state.view?.sid === agent.session_id && !state.view.aid;
   return h('a', {
-    class: `agent-item${active ? ' active' : ''}`,
+    class: `agent-item${active ? ' active' : ''}${isBlocked(agent) ? ' blocked' : ''}`,
     href: agentHash(agent.session_id),
     title: clip(full || agent.intent || agent.name || '', 400),
   },
@@ -310,12 +322,88 @@ async function refreshAgents() {
   try {
     state.agents = (await api('/api/agents')).agents;
     renderSidebar();
+    updateAttention();
   } catch (error) {
     if (!state.agents.length) {
       $('#agent-list').replaceChildren(h('div', { class: 'state error', text: `加载 agent 列表失败：${error.message}` }));
     }
   }
   setTimeout(refreshAgents, state.config.poll_interval_ms);
+}
+
+// ===== Attention (blocked agents) =====
+
+const BASE_TITLE = document.title;
+const NOTIFY_KEY = 'cav.notify';
+const canNotify = typeof Notification !== 'undefined';
+
+function notifyPref() {
+  try {
+    return localStorage.getItem(NOTIFY_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setNotifyPref(on) {
+  try {
+    localStorage.setItem(NOTIFY_KEY, on ? '1' : '0');
+  } catch {
+    // Persistence is best effort.
+  }
+}
+
+const notifyEnabled = () => canNotify && Notification.permission === 'granted' && notifyPref();
+
+function renderNotifyButton() {
+  const button = $('#notify-btn');
+  button.hidden = !canNotify;
+  button.setAttribute('aria-pressed', String(notifyEnabled()));
+  button.title = canNotify && Notification.permission === 'denied' ? '浏览器已禁止通知，请在站点设置中允许' : '有 agent 等待处理时发出系统通知';
+}
+
+/** Toggle notifications; the permission prompt must come from this user click. */
+async function toggleNotify() {
+  if (notifyEnabled()) {
+    setNotifyPref(false);
+  } else {
+    try {
+      if (Notification.permission !== 'granted') await Notification.requestPermission();
+    } catch {
+      // Some browsers only support the callback form; treat as not granted.
+    }
+    setNotifyPref(Notification.permission === 'granted');
+  }
+  renderNotifyButton();
+}
+
+function notifyBlocked(agent) {
+  const { title, body } = notificationText(agent);
+  try {
+    const note = new Notification(title, { body, tag: agent.session_id });
+    note.onclick = () => {
+      window.focus();
+      location.hash = agentHash(agent.session_id);
+      note.close();
+    };
+  } catch {
+    // Notification construction can fail (e.g. Android Chrome requires a service worker).
+  }
+}
+
+/** After each poll: update the page title and notify agents that just became blocked (never on first load). */
+function updateAttention() {
+  const blocked = state.agents.filter(isBlocked);
+  document.title = pageTitle(BASE_TITLE, blocked.length);
+  if (notifyEnabled()) {
+    for (const agent of newlyBlocked(state.blockedIds, state.agents)) {
+      const key = blockKey(agent);
+      if (state.notified.has(key)) continue;
+      state.notified.add(key);
+      notifyBlocked(agent);
+    }
+  }
+  state.blockedIds = new Set(blocked.map((agent) => agent.session_id));
 }
 
 /** One input: typing filters the sidebar, Enter runs the full-text search. */
@@ -330,6 +418,8 @@ function initSidebar() {
     const q = search.value.trim();
     if (q) location.hash = `#/search${query({ q })}`;
   });
+  $('#notify-btn').addEventListener('click', toggleNotify);
+  renderNotifyButton();
   $('#home-btn').addEventListener('click', goHome);
   $('#menu-btn').addEventListener('click', toggleSidebar);
   $('#backdrop').addEventListener('click', toggleSidebar);
@@ -754,7 +844,11 @@ function createView({ sid, aid, at, b }) {
     loadingOlder: false,
     loadingAfter: false,
     summaryOpen: false, // end-of-conversation result summary expanded
+    tasksOpen: false, // background task list expanded (collapsed by default)
     summaryKey: null, // rendered summary text, to skip no-op refreshes
+    askKey: null, // rendered pending-question JSON, same purpose
+    tasks: [], // background tasks from the tasks API
+    tasksKey: null, // rendered task list JSON, same purpose
     prompts: [], // human prompts from the prompts API
     promptsLoaded: false,
     timelineCount: 0, // events reported by the timeline API (drives the topbar button)
@@ -819,9 +913,11 @@ function buildViewDom(view) {
   const top = h('div', { class: 'top-status' });
   const bottom = h('div', { class: 'top-status' });
   const list = h('div', { class: 'stream' }, h('div', { class: 'state', text: '加载中…' }));
+  const ask = h('div', { class: 'stream end-summary-slot' });
   const summary = h('div', { class: 'stream end-summary-slot' });
-  const scroller = h('div', { class: 'scroller' }, top, list, summary, bottom);
-  view.els = { top, bottom, list, summary, scroller };
+  const tasks = h('div', { class: 'stream end-summary-slot' });
+  const scroller = h('div', { class: 'scroller' }, top, list, ask, summary, tasks, bottom);
+  view.els = { top, bottom, list, ask, summary, tasks, scroller };
   scroller.addEventListener('scroll', () => scheduleNavigatorUpdate(view), { passive: true });
   const stage = h('div', { class: 'stage' }, scroller, buildFabs(view));
   $('#view').replaceChildren(stage);
@@ -829,7 +925,11 @@ function buildViewDom(view) {
 
 function showWelcome() {
   $('#header-content').replaceChildren();
-  $('#view').replaceChildren(h('div', { class: 'state', text: '从左侧选择一个 agent 查看对话。' }));
+  const listFab = fabButton('打开 agent 列表', 'list', toggleSidebar);
+  listFab.classList.add('fab-list');
+  $('#view').replaceChildren(h('div', { class: 'stage' },
+    h('div', { class: 'state', text: '从左侧选择一个 agent 查看对话。' }),
+    h('div', { class: 'fabs' }, listFab)));
 }
 
 function showViewError(view, error) {
@@ -852,21 +952,64 @@ function renderSubagentHeader(view, name) {
   ];
 }
 
-/** Folder icon + "路径" copy button for the working directory; the path itself is only exposed via the tooltip. */
-function renderCwdCopy(cwd) {
-  // The label doubles as the live region: it flashes "已复制" / "复制失败" in place of "路径"
-  const label = h('span', { class: 'copy-label', 'aria-live': 'polite', text: '路径' });
+const SESSION_FIELDS = [
+  ['pid', 'PID'], ['sessionId', 'Session ID'], ['cwd', '工作目录'], ['startedAt', '启动时间'],
+  ['kind', '类型'], ['status', '状态'], ['entrypoint', '入口'], ['version', '版本'],
+];
+
+/** Copy-icon button that swaps to a check (or a cross) briefly; falls back to a manual-copy input. */
+function renderRowCopy(value) {
+  const button = h('button', { class: 'row-copy', type: 'button', title: '复制', 'aria-label': '复制' }, icon('copy'));
+  button.addEventListener('click', async () => {
+    const ok = await copyText(value);
+    if (!ok) showManualCopy(value, button);
+    button.replaceChildren(icon(ok ? 'check' : 'close'));
+    clearTimeout(Number(button.dataset.timer));
+    button.dataset.timer = setTimeout(() => button.replaceChildren(icon('copy')), 1500);
+  });
+  return button;
+}
+
+/** Rewrite the info popover rows in place so an open popover survives header refreshes; unchanged data is left alone. */
+function fillSessionInfo(pop, info) {
+  const key = JSON.stringify(info);
+  if (pop.dataset.key === key) return;
+  pop.dataset.key = key;
+  const rows = SESSION_FIELDS.filter(([field]) => info[field] !== undefined).map(([field, label]) => {
+    const value = field === 'startedAt' ? new Date(info[field]).toLocaleString() : String(info[field]);
+    return [h('dt', { text: label }), h('dd', {}, h('span', { class: 'mono', text: value }), renderRowCopy(value))];
+  });
+  if (info.alive !== undefined) {
+    rows.push([h('dt', { text: '进程' }), h('dd', { text: info.alive ? '运行中' : '已退出（以上为最后记录）' })]);
+  }
+  pop.replaceChildren(h('dl', {}, rows.flat()));
+}
+
+/** Circled "i" button toggling a popover with the session file fields; the popover is filled by fillSessionInfo. */
+function renderInfoButton() {
+  const pop = h('div', { class: 'info-pop', hidden: true });
   const button = h('button', {
-    class: 'copy-btn', type: 'button', title: `复制工作目录路径：${cwd}`, 'aria-label': '复制工作目录路径',
-    onclick: async () => {
-      if (await copyText(cwd)) flashLabel(label, '已复制');
-      else { flashLabel(label, '复制失败'); showManualCopy(cwd, button); }
-      button.classList.add('flashing'); // mobile shows the label only while it flashes
-      clearTimeout(Number(button.dataset.flash));
-      button.dataset.flash = setTimeout(() => button.classList.remove('flashing'), 1500);
+    class: 'copy-btn info-btn', type: 'button', title: '会话信息', 'aria-label': '会话信息', 'aria-expanded': 'false',
+    onclick: () => {
+      pop.hidden = !pop.hidden;
+      button.setAttribute('aria-expanded', String(!pop.hidden));
     },
-  }, icon('folder'), label);
-  return h('span', { class: 'cwd-group' }, button);
+  }, icon('info'));
+  return [button, pop];
+}
+
+/** Session info popover button; it is the only place the working directory can be copied from. */
+function renderCopyGroup() {
+  return h('span', { class: 'cwd-group' }, renderInfoButton());
+}
+
+/** Close any open session info popover; returns whether one was open. */
+function closeInfoPop() {
+  const pop = document.querySelector('.info-pop:not([hidden])');
+  if (!pop) return false;
+  pop.hidden = true;
+  pop.parentElement.querySelector('.info-btn')?.setAttribute('aria-expanded', 'false');
+  return true;
 }
 
 function renderHeader(view) {
@@ -881,13 +1024,45 @@ function renderHeader(view) {
     box.replaceChildren(...renderSubagentHeader(view, name));
     return;
   }
-  // Re-rendering would drop the copy feedback / manual-copy input, so keep the existing group while the path is unchanged.
+  // Re-rendering would drop the copy feedback / manual-copy input, so keep the existing group while it still applies.
+  const info = detail.session || (detail.cwd ? { cwd: detail.cwd } : null);
+  const key = info ? '1' : '';
   const prev = box.querySelector('.cwd-group');
-  const keep = prev && prev.dataset.cwd === detail.cwd ? prev : null;
-  const cwd = keep || (detail.cwd ? renderCwdCopy(detail.cwd) : null);
-  if (cwd && !keep) cwd.dataset.cwd = detail.cwd;
+  const keep = prev && prev.dataset.key === key ? prev : null;
+  let copies = keep;
+  if (!copies && info) {
+    copies = renderCopyGroup();
+    copies.dataset.key = key;
+  }
+  if (info && copies) fillSessionInfo(copies.querySelector('.info-pop'), info);
   box.replaceChildren(
-    h('div', { class: 'head-title' }, h('span', { class: 'text', text: name }), statusBadge(detail.status), cwd));
+    h('div', { class: 'head-title' }, h('span', { class: 'text', text: name }), statusBadge(detail.status), copies));
+}
+
+/** Read-only card with the questions a blocked agent is waiting on; answering happens in the terminal. */
+function renderQuestionCard(questions) {
+  return h('div', { class: 'ask-card' },
+    h('div', { class: 'end-summary-label', text: '等待你的选择' }),
+    questions.map((q) => h('div', { class: 'ask-q' },
+      q.header ? h('span', { class: 'ask-header', text: q.header }) : null,
+      h('div', { class: 'ask-text', text: q.question }),
+      q.multiSelect ? h('div', { class: 'muted', text: '可多选' }) : null,
+      h('ul', { class: 'ask-options' }, (q.options || []).map((o) => h('li', {},
+        h('span', { class: 'ask-label', text: o.label }),
+        o.description ? h('span', { class: 'ask-desc', text: o.description }) : null))))),
+    h('div', { class: 'ask-hint', text: '在终端中回答' }));
+}
+
+/** Show the pending questions above the result summary, under the same conditions; no-op refreshes are skipped. */
+function renderPendingQuestions(view) {
+  const questions = view.aid || view.pinned || view.hasMoreAfter || !isBlocked(view.detail) ? [] : view.detail.questions || [];
+  const key = JSON.stringify(questions);
+  if (key === view.askKey) return;
+  const { scroller, ask } = view.els;
+  const stick = isAtBottom(scroller);
+  view.askKey = key;
+  ask.replaceChildren(...(questions.length ? [renderQuestionCard(questions)] : []));
+  if (stick && !view.hasMoreAfter) scrollToBottom(scroller);
 }
 
 /** Result (fallback: detail) text for the end-of-conversation block, or '' when there is none. */
@@ -913,6 +1088,8 @@ function renderResultSummary(view, full) {
 function renderEndSummary(view) {
   const slot = view.els.summary;
   if (!slot) return;
+  renderPendingQuestions(view);
+  renderTasks(view);
   const full = view.aid || view.pinned || view.hasMoreAfter ? '' : resultText(view.detail);
   if (full === view.summaryKey) return;
   const { scroller } = view.els;
@@ -921,6 +1098,54 @@ function renderEndSummary(view) {
   slot.replaceChildren(...(full ? [renderResultSummary(view, full)] : []));
   if (stick && !view.hasMoreAfter) scrollToBottom(scroller);
   updateNavigator(view);
+}
+
+/** Scroll to the tool card that started a task (no-op when it is outside the loaded window). */
+function jumpToTool(view, toolId) {
+  const card = view.toolSlots.get(toolId)?.card;
+  if (!card) return;
+  card.scrollIntoView({ block: 'center' });
+  flash(card);
+}
+
+function renderTaskCard(view, tasks) {
+  const list = h('ul', { class: 'task-list' }, tasks.map((t) => h('li', {},
+    h('button', { class: 'task-row', type: 'button', onclick: () => jumpToTool(view, t.tool_use_id) },
+      h('span', { class: 'task-kind', text: KIND_LABELS[t.kind] || t.kind }),
+      h('span', { class: 'task-desc', text: t.description }),
+      h('span', { class: `task-status ${t.status}`, text: statusLabel(t) })))));
+  // Collapsed by default; the open state lives on the view so poll re-renders keep it.
+  return h('div', { class: 'end-summary task-card' }, h('details', {
+    open: view.tasksOpen,
+    ontoggle: (event) => { view.tasksOpen = event.currentTarget.open; },
+  }, h('summary', { class: 'end-summary-label', text: tasksSummary(tasks) }), list));
+}
+
+/** Background-task block below the summary, under the same conditions; no-op refreshes are skipped. */
+function renderTasks(view) {
+  const slot = view.els.tasks;
+  if (!slot) return;
+  const tasks = view.aid || view.pinned || view.hasMoreAfter ? [] : sortTasks(view.tasks);
+  const key = JSON.stringify(tasks);
+  if (key === view.tasksKey) return;
+  const { scroller } = view.els;
+  const stick = isAtBottom(scroller);
+  view.tasksKey = key;
+  slot.replaceChildren(...(tasks.length ? [renderTaskCard(view, tasks)] : []));
+  if (stick && !view.hasMoreAfter) scrollToBottom(scroller);
+}
+
+/** Fetch background tasks (main views only); on failure keep the previous list. */
+async function refreshTasks(view) {
+  if (view.aid) return;
+  try {
+    const { tasks } = await api(`${agentPath(view.sid)}/tasks`);
+    if (!isActive(view) || !Array.isArray(tasks)) return;
+    view.tasks = tasks;
+    renderTasks(view);
+  } catch {
+    // Optional block; the next tick retries.
+  }
 }
 
 function indexSubagents(view, subagents) {
@@ -1173,6 +1398,8 @@ async function tick(view) {
       if (!isActive(view)) return;
       await refreshTimeline(view);
       if (!isActive(view)) return;
+      await refreshTasks(view);
+      if (!isActive(view)) return;
     }
     renderHeader(view);
     renderEndSummary(view);
@@ -1190,20 +1417,23 @@ async function openView(route) {
   $('#timeline-btn').hidden = true; // shown once the timeline has events
   buildViewDom(view);
   try {
-    const [detail, subagents] = await Promise.all([api(agentPath(view.sid)), fetchSubagents(view)]);
+    // The page request depends only on view.at / page_size / view.pinned, so it runs alongside detail.
+    const limit = state.config.page_size;
+    const params = view.at !== null ? { around: view.at, limit } : { limit };
+    const [detail, subagents, page] = await Promise.all([
+      api(agentPath(view.sid)),
+      fetchSubagents(view),
+      api(`${view.base}/messages${query({ ...params, leaf: view.pinned })}`),
+    ]);
     if (!isActive(view)) return;
     view.detail = detail;
     view.wasLive = Boolean(detail.live);
     indexSubagents(view, subagents);
     renderHeader(view);
-
-    const limit = state.config.page_size;
-    const params = view.at !== null ? { around: view.at, limit } : { limit };
-    const page = await api(`${view.base}/messages${query({ ...params, leaf: view.pinned })}`);
-    if (!isActive(view)) return;
     applyInitialPage(view, page);
     refreshPrompts(view);
     refreshTimeline(view);
+    refreshTasks(view);
     scheduleTick(view);
   } catch (error) {
     if (isActive(view)) showViewError(view, error);
@@ -1259,13 +1489,21 @@ function highlightPrompt(view) {
   if (isPromptsOpen()) view.promptItems.get(view.currentPrompt)?.scrollIntoView({ block: 'nearest' });
 }
 
+/** Index of the question "上一个" should land on: the current one if its start is scrolled out above, else the one before. */
+function prevPromptIndex(view, current) {
+  if (current < 0) return -1;
+  const el = findMessage(view, view.prompts[current].idx);
+  const top = view.els.scroller.getBoundingClientRect().top;
+  return el && el.getBoundingClientRect().top >= top - 8 ? current - 1 : current;
+}
+
 /** Sync the highlighted question and the floating buttons with the scroll position. */
 function updateNavigator(view) {
   const { scroller, bottomBtn, prev, next } = view.els;
-  bottomBtn.hidden = !view.hasMoreAfter && isAtBottom(scroller);
+  bottomBtn.disabled = !view.hasMoreAfter && isAtBottom(scroller); // stays in place so the other buttons never shift
   if (view.aid) return;
   const current = currentPromptIndex(view);
-  prev.disabled = current <= 0;
+  prev.disabled = prevPromptIndex(view, current) < 0;
   next.disabled = current >= view.prompts.length - 1;
   const idx = current >= 0 ? view.prompts[current].idx : null;
   if (idx !== view.currentPrompt) {
@@ -1297,7 +1535,7 @@ async function stepPrompt(view, direction) {
   if (view.detail?.live) await refreshPrompts(view); // new questions may have arrived
   if (!isActive(view)) return;
   const current = currentPromptIndex(view);
-  const target = view.prompts[direction < 0 ? current - 1 : current + 1];
+  const target = view.prompts[direction < 0 ? prevPromptIndex(view, current) : current + 1];
   if (target) goToPrompt(view, target.idx);
 }
 
@@ -1411,6 +1649,7 @@ function initNavigator() {
 /** "[" / "]" step through questions; Escape closes a drawer first, otherwise goes home. Ignored while typing. */
 function onNavigatorKey(event) {
   if (event.key === 'Escape') {
+    if (closeInfoPop()) return;
     const sidebarOpen = document.body.classList.contains('sidebar-open');
     if (anyDrawerOpen() || sidebarOpen) {
       closeDrawers();
