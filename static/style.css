@@ -1,6 +1,6 @@
 /* ===== Theme tokens ===== */
 :root {
-  --col-width: 760px; /* shared reading column for assistant/tool/system rows */
+  --col-width: min(100%, 1000px); /* shared reading column for assistant/tool/system rows */
   --bg: #f5f6f8;
   --surface: #ffffff;
   --surface-2: #eef0f4;
@@ -307,9 +307,9 @@ button { font: inherit; color: inherit; }
 .fab-list { display: none; }
 .fab:disabled { opacity: 0.4; cursor: default; }
 .fab .icon { width: 20px; height: 20px; }
-.stream { max-width: 900px; margin: 0 auto; }
+.stream { max-width: 1160px; margin: 0 auto; }
 
-.top-status { max-width: 900px; min-height: 28px; margin: 0 auto; text-align: center; color: var(--muted); font-size: 12px; line-height: 28px; }
+.top-status { max-width: 1160px; min-height: 28px; margin: 0 auto; text-align: center; color: var(--muted); font-size: 12px; line-height: 28px; }
 
 .state { padding: 48px 16px; text-align: center; color: var(--muted); }
 .state.error { color: var(--err); }
